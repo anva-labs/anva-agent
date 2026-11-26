@@ -1,12 +1,74 @@
+diff --git a/dist/runtimes/devin/index.d.ts b/dist/runtimes/devin/index.d.ts
+index 44a0fe8d3000e0cdbee2a87820da9dd11fdef1d2..2982a4d5e04743cf779897bdae134f7b53e74008 100644
+--- a/dist/runtimes/devin/index.d.ts
++++ b/dist/runtimes/devin/index.d.ts
+@@ -3,7 +3,6 @@ export declare const devinRuntime: Omit<{
+     readonly id: "devin";
+     readonly sessionCapabilities: () => {
+         taskEventTypes: never[];
+-        steer: false;
+         stopTask: false;
+     };
+     readonly manualCompaction: {
+diff --git a/dist/runtimes/devin/index.js b/dist/runtimes/devin/index.js
+index 41ac85f1426ac479d9f69ffc067dd6429abebc4a..0725d28bc34d559d353c24cf93e111f8e64e4faa 100644
+--- a/dist/runtimes/devin/index.js
++++ b/dist/runtimes/devin/index.js
+@@ -8,7 +8,7 @@ import { devinRefusedSessionOptions } from "./options.js";
+ import { devinCheckUpdate } from "./update.js";
+ export const devinRuntime = defineRuntime({
+     id: "devin",
+-    sessionCapabilities: () => ({ taskEventTypes: [], steer: false, stopTask: false }),
++    sessionCapabilities: () => ({ taskEventTypes: [], stopTask: false }),
+     manualCompaction: { kind: "unsupported", reason: "Devin CLI ACP exposes no verified manual compaction protocol or structured completion signal." },
+     brand: runtimeBrands.devin,
+     // Devin 3000.12.57: WINDSURF_API_KEY (DEVIN_API_KEY is ignored) and $XDG_DATA_HOME/devin/credentials.toml (experiments/devin-acp/README.md).
 diff --git a/dist/runtimes/devin/session.js b/dist/runtimes/devin/session.js
+index eec2057ab2dad35541b77ac541fe6666ac031019..5ac2c5c427b69081ae75e1fb18ad3ad28d4d3c6c 100644
 --- a/dist/runtimes/devin/session.js
 +++ b/dist/runtimes/devin/session.js
-@@ -41,6 +41,8 @@ export const devinAcpProfile = {
+@@ -41,7 +41,14 @@ export const devinAcpProfile = {
+     validateOptions: (options) => {
          refuseSessionOptions(devinRefusedSessionOptions, options);
      },
++    steerRequestAdvertised: (initialized) => {
++        const capabilities = asRecord(initialized.agentCapabilities);
++        return asRecord(capabilities?._meta)?.["cognition.ai/midTurnPrompts"] === true;
++    },
++    steerParams: () => ({}),
      modelViaConfigOption: true,
 +    // Devin sends the full shell command in terminal/create without args.
 +    terminalShellCommand: true,
      openFailure: devinOpenFailure,
      failureOutcome: devinFailureOutcome,
      configureSession: async ({ request, sessionId, response }) => {
+diff --git a/dist/shared/acp/session.js b/dist/shared/acp/session.js
+index 57c3b9c28a911e68a84e367639951bedaca4da51..93653739e5d0312b12e0409059a36b30a5e094dc 100644
+--- a/dist/shared/acp/session.js
++++ b/dist/shared/acp/session.js
+@@ -222,9 +222,9 @@ export function finishAcpSession(profile, options, credentials, runtime, opened,
+         : kernel.unreachable() ?? decide(request)));
+     // A profile without a native steer cannot inject, so the session has no `steer`;
+     // neither does one whose connection did not advertise its steer request.
+-    const { steerParams } = profile;
+-    const steerRequest = profile.steerRequestAdvertised?.(opened.initialized) === false ? undefined : profile.steerRequest;
+-    const steer = steerParams === undefined && steerRequest === undefined
++    const { steerParams, steerRequest } = profile;
++    const steerAdvertised = profile.steerRequestAdvertised?.(opened.initialized) !== false;
++    const steer = !steerAdvertised || (steerParams === undefined && steerRequest === undefined)
+         ? {}
+         : {
+             steer: (input, inputOptions) => control({ kind: "steer", input, ...inputOptions }, (request) => {
+diff --git a/dist/shared/acp/steer-request.d.ts b/dist/shared/acp/steer-request.d.ts
+index a46c5d91d4134fd0d700a8f982dda4a2fa33dc09..d0e295123fe1a57cdc3db03bfd2828c098e3b8df 100644
+--- a/dist/shared/acp/steer-request.d.ts
++++ b/dist/shared/acp/steer-request.d.ts
+@@ -14,7 +14,7 @@ export interface AcpSteerRequestHooks {
+         readonly method: string;
+         readonly params: JsonRecord;
+     };
+-    /** Whether this connection's `initialize` answer advertises `steerRequest`; false leaves the session without `steer`. Absent: it always exists. */
++    /** Whether this connection's `initialize` answer advertises the profile's steering operation. False leaves the session without `steer`. */
+     readonly steerRequestAdvertised?: (initialized: JsonRecord) => boolean;
+     /**
+      * Reads the answer to `steerRequest`: `accepted` admits the input into the

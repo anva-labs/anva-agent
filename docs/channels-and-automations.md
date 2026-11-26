@@ -50,7 +50,7 @@ anva agent env set main TELEGRAM_ALLOWED_USER_IDS "123456789,987654321"
 ### Interaction behavior
 
 - **1:1 thread mapping**: Each DM chat (or each `message_thread_id` in Threaded Mode) maps to a single persistent Anva thread. Topics can be renamed anytime with `anva thread rename`.
-- **Immediate delivery & concurrent steer**: Inbound messages are delivered immediately without artificial buffering. Sending another message while a turn is running steers the active turn (marked with `👍`) rather than generating duplicate replies.
+- **Immediate delivery & concurrent steer**: Anva submits inbound messages as they arrive. Messages received while a turn is running get a `👍` reaction. On sessions with steering, those messages join the active turn and share its reply. Other sessions queue each message for a separate turn and reply.
 - **Reactions, live text segments, and tool trace**: Inbound messages receive a `👀` reaction and typing indicators. Assistant text emitted before a tool call is sent as its own live message; Anva also updates a single status message with live tool progress (for example `🔧 read → bash → edit`).
 - **Formatting and attachments**: Reply text renders Markdown to Telegram HTML and falls back to plain text if formatting fails. Inbound files are saved under `~/.anva/agents/<slug>/attachments/`, and supported images (`png`, `jpeg`, `gif`, `webp`) are passed natively when the thread's agent supports image input.
 - **Proactive delivery**: Normal replies in a bound conversation are delivered automatically. For out-of-band messages or files from inside a script or another thread, use:
