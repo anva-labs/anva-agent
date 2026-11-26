@@ -1,15 +1,3 @@
-diff --git a/dist/runtimes/devin/index.d.ts b/dist/runtimes/devin/index.d.ts
-index 44a0fe8d3000e0cdbee2a87820da9dd11fdef1d2..2982a4d5e04743cf779897bdae134f7b53e74008 100644
---- a/dist/runtimes/devin/index.d.ts
-+++ b/dist/runtimes/devin/index.d.ts
-@@ -3,7 +3,6 @@ export declare const devinRuntime: Omit<{
-     readonly id: "devin";
-     readonly sessionCapabilities: () => {
-         taskEventTypes: never[];
--        steer: false;
-         stopTask: false;
-     };
-     readonly manualCompaction: {
 diff --git a/dist/runtimes/devin/index.js b/dist/runtimes/devin/index.js
 index 41ac85f1426ac479d9f69ffc067dd6429abebc4a..0725d28bc34d559d353c24cf93e111f8e64e4faa 100644
 --- a/dist/runtimes/devin/index.js
@@ -24,94 +12,39 @@ index 41ac85f1426ac479d9f69ffc067dd6429abebc4a..0725d28bc34d559d353c24cf93e111f8
      brand: runtimeBrands.devin,
      // Devin 3000.12.57: WINDSURF_API_KEY (DEVIN_API_KEY is ignored) and $XDG_DATA_HOME/devin/credentials.toml (experiments/devin-acp/README.md).
 diff --git a/dist/runtimes/devin/session.js b/dist/runtimes/devin/session.js
-index eec2057ab2dad35541b77ac541fe6666ac031019..ae9d0c9086b62aae787de195f5f5cebb1a7c2bd7 100644
+index eec2057ab2dad35541b77ac541fe6666ac031019..76b1d93286393ea25d5b891a36673cb8c8592d29 100644
 --- a/dist/runtimes/devin/session.js
 +++ b/dist/runtimes/devin/session.js
-@@ -41,7 +41,14 @@ export const devinAcpProfile = {
-     validateOptions: (options) => {
+@@ -42,6 +42,8 @@ export const devinAcpProfile = {
          refuseSessionOptions(devinRefusedSessionOptions, options);
      },
-+    steerAdvertised: (initialized) => {
-+        const capabilities = asRecord(initialized.agentCapabilities);
-+        return asRecord(capabilities?._meta)?.["cognition.ai/midTurnPrompts"] === true;
-+    },
-+    steerParams: () => ({}),
      modelViaConfigOption: true,
 +    // Devin sends the full shell command in terminal/create without args.
 +    terminalShellCommand: true,
      openFailure: devinOpenFailure,
      failureOutcome: devinFailureOutcome,
      configureSession: async ({ request, sessionId, response }) => {
-diff --git a/dist/runtimes/opencode/steering.d.ts b/dist/runtimes/opencode/steering.d.ts
-index 99518823cab5331cc89618ac9a792e6b84f5edca..bd32f23f4a0117e85eaa196061e58af27996271b 100644
---- a/dist/runtimes/opencode/steering.d.ts
-+++ b/dist/runtimes/opencode/steering.d.ts
-@@ -7,5 +7,5 @@ import type { AcpSessionProfile } from "../../shared/acp/profile.js";
-  * `promptRequired` / `noRunningTurn` without starting a turn when none runs.
-  */
- export declare const OPENCODE_STEERING = "_session/steering";
--export declare const opencodeSteering: Pick<AcpSessionProfile, "steerRequest" | "steerRequestAdvertised" | "steerRequestAnswer">;
-+export declare const opencodeSteering: Pick<AcpSessionProfile, "steerRequest" | "steerAdvertised" | "steerRequestAnswer">;
- //# sourceMappingURL=steering.d.ts.map
-\ No newline at end of file
-diff --git a/dist/runtimes/opencode/steering.js b/dist/runtimes/opencode/steering.js
-index 49df36c2ae461f84549ae7ec2940267a6f42ae55..8b1e8d13b6b56620720debf3c2177ffd9102ef4f 100644
---- a/dist/runtimes/opencode/steering.js
-+++ b/dist/runtimes/opencode/steering.js
-@@ -11,7 +11,7 @@ export const opencodeSteering = {
-     // The extension reads only `sessionId` and `prompt`; it has no input identity field.
-     steerRequest: ({ sessionId, prompt }) => ({ method: OPENCODE_STEERING, params: { sessionId, prompt } }),
-     // oxlint-disable-next-line eslint/no-underscore-dangle -- Native ACP metadata envelope.
--    steerRequestAdvertised: (initialized) => asRecord(asRecord(initialized._meta)?.steering)?.supported === true,
-+    steerAdvertised: (initialized) => asRecord(asRecord(initialized._meta)?.steering)?.supported === true,
-     steerRequestAnswer: (answer) => {
-         const outcome = asRecord(answer)?.outcome;
-         if (outcome === "injected") {
-diff --git a/dist/shared/acp/profile.d.ts b/dist/shared/acp/profile.d.ts
-index 8089043500341ff52b9bddc995e8a5c173d0aafe..bfcfc7e0223b4a22a6f93cca9d0a37cf7c70e893 100644
---- a/dist/shared/acp/profile.d.ts
-+++ b/dist/shared/acp/profile.d.ts
-@@ -86,8 +86,10 @@ export interface AcpSessionProfile extends AcpDerivedSessionHooks, AcpSteerReque
-         readonly response: JsonRecord;
-         readonly options: SessionOptions;
-     }) => Promise<void>;
--    /** Return prompt-level extension fields for the runtime's native steer; absent when the runtime cannot steer, and then the session has no `steer`. Exclusive with `steerRequest` (steer-request.ts). */
-+    /** Extra protocol fields for steering with a second prompt. Exclusive with `steerRequest`. */
-     readonly steerParams?: (input: string) => JsonRecord;
-+    /** Whether this connection's `initialize` answer advertises the profile's steering operation. False leaves the session without `steer`. */
-+    readonly steerAdvertised?: (initialized: JsonRecord) => boolean;
-     /**
-      * Turns the runtime runs without a prompt from OAR (grok: a sub-agent's
-      * completion wake, a late interjection). OAR names each prompt it sends;
 diff --git a/dist/shared/acp/session.js b/dist/shared/acp/session.js
-index 57c3b9c28a911e68a84e367639951bedaca4da51..afc911741ea34c71045b8c88f4efe243318a7646 100644
+index 57c3b9c28a911e68a84e367639951bedaca4da51..1771aa0c84f1e99a65919bd6b975d57fed7bc79d 100644
 --- a/dist/shared/acp/session.js
 +++ b/dist/shared/acp/session.js
-@@ -220,11 +220,9 @@ export function finishAcpSession(profile, options, credentials, runtime, opened,
-     const heldControl = (body, decide) => kernel.control(body, (request) => serial(() => runtime.closed && kernel.unreachable() === null
-         ? (async () => { await runtime.exited; return kernel.unreachable() ?? decide(request); })()
+@@ -1,6 +1,7 @@
+ import { appendCleanupFailure, cleanupFailureReason } from "../executable/process-cleanup.js";
+ import { reportedStderr } from "../executable/reported-stderr.js";
+ import { sessionEnvironment } from "../environment.js";
++import { asRecord } from "../json.js";
+ import { manualCompaction } from "../manual-compaction.js";
+ import { processSessionLifecycle } from "../process-session.js";
+ import { withSessionCredentials } from "../session-credentials.js";
+@@ -222,7 +223,10 @@ export function finishAcpSession(profile, options, credentials, runtime, opened,
          : kernel.unreachable() ?? decide(request)));
--    // A profile without a native steer cannot inject, so the session has no `steer`;
--    // neither does one whose connection did not advertise its steer request.
+     // A profile without a native steer cannot inject, so the session has no `steer`;
+     // neither does one whose connection did not advertise its steer request.
 -    const { steerParams } = profile;
--    const steerRequest = profile.steerRequestAdvertised?.(opened.initialized) === false ? undefined : profile.steerRequest;
--    const steer = steerParams === undefined && steerRequest === undefined
-+    // Expose steer when the profile implements it and the handshake does not rule it out.
-+    const { steerParams, steerRequest } = profile;
-+    const steer = profile.steerAdvertised?.(opened.initialized) === false || (steerParams === undefined && steerRequest === undefined)
++    // Devin advertises steering via a second session/prompt in its ACP handshake.
++    const agentMetadata = asRecord(asRecord(opened.initialized.agentCapabilities)?._meta);
++    const steerParams = profile.steerParams
++        ?? (agentMetadata?.["cognition.ai/midTurnPrompts"] === true ? () => ({}) : undefined);
+     const steerRequest = profile.steerRequestAdvertised?.(opened.initialized) === false ? undefined : profile.steerRequest;
+     const steer = steerParams === undefined && steerRequest === undefined
          ? {}
-         : {
-             steer: (input, inputOptions) => control({ kind: "steer", input, ...inputOptions }, (request) => {
-diff --git a/dist/shared/acp/steer-request.d.ts b/dist/shared/acp/steer-request.d.ts
-index a46c5d91d4134fd0d700a8f982dda4a2fa33dc09..f829a54e4451ef13d38c9d073ab861be3b2ebef2 100644
---- a/dist/shared/acp/steer-request.d.ts
-+++ b/dist/shared/acp/steer-request.d.ts
-@@ -14,8 +14,6 @@ export interface AcpSteerRequestHooks {
-         readonly method: string;
-         readonly params: JsonRecord;
-     };
--    /** Whether this connection's `initialize` answer advertises `steerRequest`; false leaves the session without `steer`. Absent: it always exists. */
--    readonly steerRequestAdvertised?: (initialized: JsonRecord) => boolean;
-     /**
-      * Reads the answer to `steerRequest`: `accepted` admits the input into the
-      * running turn; `no_active_turn` is the runtime's report that nothing was

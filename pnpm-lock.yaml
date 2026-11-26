@@ -198,7 +198,7 @@ overrides:
   vitest: 5.1.1
 
 patchedDependencies:
-  '@botiverse/oar@0.130.1': be308d1ffe9ba223712b8a2a84f16e57309e14e5fbc5e2829e3a1db8e00dcf5b
+  '@botiverse/oar@0.130.1': c41b1a41943611bbefa916d4c7c5c1556afe68a27b18261551000799c8e5127a
 
 importers:
 
@@ -262,7 +262,7 @@ importers:
     dependencies:
       '@botiverse/oar':
         specifier: 0.130.1
-        version: 0.130.1(patch_hash=be308d1ffe9ba223712b8a2a84f16e57309e14e5fbc5e2829e3a1db8e00dcf5b)(@aws-sdk/credential-provider-node@3.972.98)(@smithy/signature-v4@5.7.5)(google-auth-library@10.9.1)(ws@8.23.0)(zod@4.6.7)
+        version: 0.130.1(patch_hash=c41b1a41943611bbefa916d4c7c5c1556afe68a27b18261551000799c8e5127a)(@aws-sdk/credential-provider-node@3.972.98)(@smithy/signature-v4@5.7.5)(google-auth-library@10.9.1)(ws@8.23.0)(zod@4.6.7)
       '@hono/node-server':
         specifier: 2.1.11
         version: 2.1.11(hono@4.13.21)
@@ -2022,7 +2022,7 @@ snapshots:
 
   '@blazediff/core@1.10.0': {}
 
-  '@botiverse/oar@0.130.1(patch_hash=be308d1ffe9ba223712b8a2a84f16e57309e14e5fbc5e2829e3a1db8e00dcf5b)(@aws-sdk/credential-provider-node@3.972.98)(@smithy/signature-v4@5.7.5)(google-auth-library@10.9.1)(ws@8.23.0)(zod@4.6.7)':
+  '@botiverse/oar@0.130.1(patch_hash=c41b1a41943611bbefa916d4c7c5c1556afe68a27b18261551000799c8e5127a)(@aws-sdk/credential-provider-node@3.972.98)(@smithy/signature-v4@5.7.5)(google-auth-library@10.9.1)(ws@8.23.0)(zod@4.6.7)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.6.7)
       cross-spawn: 7.0.6
