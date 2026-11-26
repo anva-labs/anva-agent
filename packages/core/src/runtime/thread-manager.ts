@@ -70,6 +70,7 @@ export interface AskInput {
   readonly async?: boolean;
   readonly source?: ThreadSource;
   readonly images?: readonly HarnessInputImage[];
+  readonly onDelivered?: (landed: HarnessDeliverLanded) => void;
   readonly onToolCall?: (toolName: string) => void;
   readonly onTextSegment?: (text: string, endOffset: number) => void;
 }
@@ -305,14 +306,7 @@ export class ThreadManager {
     const inputId = randomUUID();
     const wirePrompt = input.deliveryPrompt ?? input.prompt;
     if (input.async) {
-      await this.deliverSerialized(
-        session,
-        wirePrompt,
-        inputId,
-        null,
-        input.images,
-        input.notifyParentThreadId,
-      );
+      await this.deliverSerialized(session, wirePrompt, inputId, null, input);
       return {
         async: true,
         threadId: thread.id,
@@ -329,14 +323,7 @@ export class ThreadManager {
         onTextSegment: input.onTextSegment,
         steered: false,
       };
-      void this.deliverSerialized(
-        session,
-        wirePrompt,
-        inputId,
-        waiter,
-        input.images,
-        input.notifyParentThreadId,
-      ).catch(reject);
+      void this.deliverSerialized(session, wirePrompt, inputId, waiter, input).catch(reject);
     });
   }
 
@@ -782,8 +769,7 @@ export class ThreadManager {
     text: string,
     inputId: string,
     waiter: TurnWaiter | null,
-    images?: readonly HarnessInputImage[],
-    notifyParentThreadId?: string,
+    { images, notifyParentThreadId, onDelivered }: AskInput,
   ): Promise<void> {
     const run = session.deliverChain.then(async () => {
       // Pre-arm waiter before awaiting deliver() so fast or microtask turn completions never miss it.
@@ -826,31 +812,28 @@ export class ThreadManager {
         session.pendingSystemPrompt = null;
       }
 
-      if (preArmed) {
-        return;
+      if (!preArmed) {
+        if (!session.turnInFlight) {
+          this.beginActiveTurn(session, waiter, notifyParentThreadId);
+        } else if (landed === "queued") {
+          session.queuedEntries.push({
+            waiter,
+            notifyParentThreadId: notifyParentThreadId ?? null,
+          });
+        } else {
+          if (waiter) {
+            waiter.steered = landed === "steered";
+            session.currentWaiters.push(waiter);
+          }
+          if (notifyParentThreadId && !session.notifyParentForTurn) {
+            session.notifyParentForTurn = {
+              parentThreadId: notifyParentThreadId,
+              turnSeq: session.currentTurnSeq,
+            };
+          }
+        }
       }
-
-      if (landed === "queued" && session.turnInFlight) {
-        session.queuedEntries.push({
-          waiter,
-          notifyParentThreadId: notifyParentThreadId ?? null,
-        });
-      } else if (session.turnInFlight) {
-        if (landed === "steered" && waiter) {
-          waiter.steered = true;
-        }
-        if (waiter) {
-          session.currentWaiters.push(waiter);
-        }
-        if (notifyParentThreadId && !session.notifyParentForTurn) {
-          session.notifyParentForTurn = {
-            parentThreadId: notifyParentThreadId,
-            turnSeq: session.currentTurnSeq,
-          };
-        }
-      } else {
-        this.beginActiveTurn(session, waiter, notifyParentThreadId);
-      }
+      onDelivered?.(landed);
     });
     session.deliverChain = run.catch(() => {});
     return run;

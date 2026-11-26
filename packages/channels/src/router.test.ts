@@ -147,7 +147,10 @@ function createMockTelegramFetch(options: { readonly rejectToken?: string } = {}
   return { fetchImpl, calls, pushUpdate };
 }
 
-function createFakeHarness() {
+function createFakeHarness(busyTurn?: {
+  readonly delivery: "queued" | "steered";
+  readonly finish: Promise<void>;
+}) {
   const delivered: Array<{
     readonly harness: string;
     readonly text: string;
@@ -209,6 +212,7 @@ function createFakeHarness() {
       const model = options.model ?? defaultModel;
       let running = false;
       const steeredNotes: string[] = [];
+      const queuedNotes: string[] = [];
       const handle: HarnessSessionHandle = {
         id: options.resume ?? `sess_${seq}`,
         noEnv: false,
@@ -216,6 +220,10 @@ function createFakeHarness() {
         deliver: (text: string, _inputId: string, images?: readonly HarnessInputImage[]) => {
           delivered.push({ harness: options.harness, text, model, images });
           if (running) {
+            if (busyTurn?.delivery === "queued") {
+              queuedNotes.push(text);
+              return Promise.resolve("queued");
+            }
             steeredNotes.push(text);
             return Promise.resolve("steered");
           }
@@ -223,13 +231,16 @@ function createFakeHarness() {
           if (text === "wait-turn") {
             return Promise.resolve("prompted");
           }
-          if (text === "steer-slow") {
-            setTimeout(() => {
+          if (text === "busy-turn" && busyTurn) {
+            void busyTurn.finish.then(() => {
               running = false;
-              const suffix = steeredNotes.splice(0, steeredNotes.length).join("+");
-              callbacks.onTextDelta(`steered-reply:${suffix}`);
+              callbacks.onTextDelta(["busy reply", ...steeredNotes].join(" + "));
               callbacks.onTurnEnded({ kind: "completed" });
-            }, 80);
+              for (const note of queuedNotes) {
+                callbacks.onTextDelta(`queued reply: ${note}`);
+                callbacks.onTurnEnded({ kind: "completed" });
+              }
+            });
             return Promise.resolve("prompted");
           }
           if (text.startsWith("use-tools")) {
@@ -305,7 +316,7 @@ afterEach(async () => {
 });
 
 describe("ChannelRouter + TelegramChannel", () => {
-  it("routes DMs/topics, downloads attachments, handles 5 slash commands, steers, and sends files", async () => {
+  it("routes DMs/topics, downloads attachments, handles 5 slash commands, and sends files", async () => {
     const home = mkdtempSync(join(tmpdir(), "anva-chan-test-"));
     const paths = resolveAnvaPaths(home);
     const store = new AnvaStore(paths.db);
@@ -618,41 +629,6 @@ describe("ChannelRouter + TelegramChannel", () => {
     });
     await waitFor(() => tg.calls.some((c) => richMarkdown(c)?.includes("Stopped thread")));
 
-    // Steer dedup: second message into active turn reacts with 👍 and sends only ONE final reply
-    tg.pushUpdate({
-      update_id: 11,
-      message: {
-        message_id: 20,
-        chat: { id: 42, type: "private" },
-        from: { id: 42, is_bot: false, first_name: "Alice" },
-        date: 1010,
-        text: "steer-slow",
-      },
-    });
-    await waitFor(() => threads.getThreadRuntimeStatus(replacedRoute.threadId).running);
-    tg.pushUpdate({
-      update_id: 12,
-      message: {
-        message_id: 21,
-        chat: { id: 42, type: "private" },
-        from: { id: 42, is_bot: false, first_name: "Alice" },
-        date: 1011,
-        text: "steer-addon",
-      },
-    });
-    await waitFor(() => tg.calls.some((c) => richMarkdown(c) === "steered-reply:steer-addon"));
-    const steeredReplies = tg.calls.filter((c) => richMarkdown(c) === "steered-reply:steer-addon");
-    expect(steeredReplies).toHaveLength(1);
-    expect(
-      tg.calls.some(
-        (c) =>
-          c.method === "setMessageReaction" &&
-          c.body.message_id === 21 &&
-          Array.isArray(c.body.reaction) &&
-          (c.body.reaction[0] as { emoji?: string } | undefined)?.emoji === "👍",
-      ),
-    ).toBe(true);
-
     // Proactive text and photo upload by thread ID.
     const report = "Report is **ready**.";
     await router.send({
@@ -681,6 +657,74 @@ describe("ChannelRouter + TelegramChannel", () => {
       ),
     ).toBe(true);
   });
+
+  it.each([
+    {
+      delivery: "steered",
+      feedback: "⏩ Steered into the current turn.",
+      replies: ["busy reply + follow-up"],
+    },
+    {
+      delivery: "queued",
+      feedback: "⏳ Queued for the next turn.",
+      replies: ["busy reply", "queued reply: follow-up"],
+    },
+  ] as const)(
+    "acknowledges a $delivery message before the active turn finishes",
+    async ({ delivery, feedback, replies }) => {
+      const home = mkdtempSync(join(tmpdir(), "anva-telegram-busy-test-"));
+      const paths = resolveAnvaPaths(home);
+      const store = new AnvaStore(paths.db);
+      const finishTurn = Promise.withResolvers<void>();
+      const { harness, delivered } = createFakeHarness({ delivery, finish: finishTurn.promise });
+      const threads = new ThreadManager({
+        store,
+        harness,
+        paths,
+        getApiConfig: () => ({ url: "http://127.0.0.1:1", token: "tok" }),
+      });
+      const tg = createMockTelegramFetch();
+      const router = createChannelRouter(
+        { store, harness, threads, paths },
+        { fetchImpl: tg.fetchImpl },
+      );
+      cleanups.push(async () => {
+        await router.stop();
+        await threads.shutdown();
+        store.close();
+        rmSync(home, { recursive: true, force: true });
+      });
+
+      store.createAgent({ slug: "coder", name: "Coder", defaultHarness: "mock" });
+      setAgentEnvVar(paths.agentEnv("coder"), "TELEGRAM_BOT_TOKEN", "good-token");
+      setAgentEnvVar(paths.agentEnv("coder"), "TELEGRAM_ALLOWED_USER_IDS", "42");
+      await router.connect({ platform: "telegram", agentSlug: "coder" });
+
+      const send = (id: number, text: string) =>
+        tg.pushUpdate({
+          update_id: id,
+          message: {
+            message_id: id,
+            chat: { id: 42, type: "private" },
+            from: { id: 42, is_bot: false, first_name: "Alice" },
+            date: 1000 + id,
+            text,
+          },
+        });
+      const messages = () =>
+        tg.calls.filter((call) => call.method === "sendRichMessage").map(richMarkdown);
+
+      send(1, "busy-turn");
+      await waitFor(() => delivered.some((entry) => entry.text === "busy-turn"));
+      send(2, "follow-up");
+      await waitFor(() => messages().includes(feedback));
+      expect(messages()).toEqual([feedback]);
+
+      finishTurn.resolve();
+      await waitFor(() => replies.every((reply) => messages().includes(reply)));
+      expect(messages()).toHaveLength(replies.length + 1);
+    },
+  );
 
   it("passes complete Markdown with tables to Telegram as rich messages", async () => {
     const home = mkdtempSync(join(tmpdir(), "anva-telegram-table-test-"));
