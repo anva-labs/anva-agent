@@ -401,34 +401,11 @@ export function createChannelRouter(
     const thread = existingThread ?? createBoundThread(entry.connection, agent, target);
 
     const images = extractNativeImages(msg);
+    const { channel } = entry;
     const alreadyRunning = threads.getThreadRuntimeStatus(thread.id).running;
-    if (alreadyRunning) {
-      await entry.channel.reactMessage(target, msg.messageId, "👍");
-      try {
-        const res = await threads.ask({
-          threadId: thread.id,
-          prompt,
-          source: "channel",
-          ...(images.length > 0 ? { images } : {}),
-        });
-        if (!res.async && !res.steered) {
-          await entry.channel.sendText(target, res.reply.trim() || "(empty reply)");
-        }
-      } catch (error) {
-        const errMsg =
-          error instanceof AnvaError
-            ? `${error.code}: ${error.next}`
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        await entry.channel.sendText(target, `⚠️ ${errMsg}`);
-      } finally {
-        await entry.channel.reactMessage(target, msg.messageId, null);
-      }
-      return;
-    }
-
-    const live = await entry.channel.beginLiveReply(target, msg.messageId);
+    const live = alreadyRunning ? null : await channel.beginLiveReply(target, msg.messageId);
+    let steered = false;
+    let feedback: Promise<unknown> | undefined;
     let streamedLen = 0;
     let segmentChain: Promise<boolean> = Promise.resolve(true);
     try {
@@ -437,8 +414,25 @@ export function createChannelRouter(
         prompt,
         source: "channel",
         ...(images.length > 0 ? { images } : {}),
-        onToolCall: (toolName) => live.recordToolCall(toolName),
+        onDelivered: (landed) => {
+          if (landed === "prompted") {
+            return;
+          }
+          steered = landed === "steered";
+          const text = steered
+            ? "⏩ Steered into the current turn."
+            : "⏳ Queued for the next turn.";
+          feedback = channel.sendText(target, text).catch((error) => options.onError?.(error));
+        },
+        onToolCall: (toolName) => {
+          if (!steered) {
+            live?.recordToolCall(toolName);
+          }
+        },
         onTextSegment: (text, endOffset) => {
+          if (!live || steered) {
+            return;
+          }
           const sent = live.sendTextSegment(text);
           segmentChain = segmentChain.then(async (ok) => {
             if (!ok || !(await sent)) {
@@ -450,12 +444,19 @@ export function createChannelRouter(
         },
       });
 
+      await feedback;
       await segmentChain;
-      let finalText = res.async ? "Queued for processing." : res.reply.slice(streamedLen).trim();
-      if (!res.async && !finalText && streamedLen === 0) {
-        finalText = "(empty reply)";
+      if (res.async || res.steered) {
+        await live?.finish("");
+        return;
       }
-      await live.finish(finalText);
+      const finalText =
+        res.reply.slice(streamedLen).trim() || (streamedLen === 0 ? "(empty reply)" : "");
+      if (live) {
+        await live.finish(finalText);
+      } else {
+        await channel.sendText(target, finalText);
+      }
     } catch (error) {
       const errMsg =
         error instanceof AnvaError
@@ -463,7 +464,12 @@ export function createChannelRouter(
           : error instanceof Error
             ? error.message
             : String(error);
-      await live.fail(errMsg);
+      await feedback;
+      if (live) {
+        await live.fail(errMsg);
+      } else {
+        await channel.sendText(target, `⚠️ ${errMsg}`);
+      }
     }
   }
 
