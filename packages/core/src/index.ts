@@ -10,7 +10,9 @@ export {
   buildSystemPromptSnapshot,
   formatAutomationContextPrompt,
   formatChannelAttachmentTag,
+  formatChildNotificationsPrompt,
   wrapInlineSystemContext,
+  type ChildCompletionNoticeSummary,
   type SystemPromptContext,
 } from "./prompts.ts";
 export { ensureAgentHome, readMemory, readPersona, validateSlug } from "./home/agent-home.ts";
@@ -40,6 +42,7 @@ export {
   type MessageRole,
   type ThreadRecord,
   type ThreadSource,
+  type ThreadStatus,
 } from "./store/db.ts";
 export type {
   ChannelBridge,
@@ -72,14 +75,18 @@ export {
   HistoryIndex,
   splitSearchTerms,
   type SearchContextMessage,
-  type SessionReadResult,
-  type SessionSearchHit,
+  type ThreadReadResult,
+  type ThreadSearchHit,
 } from "./runtime/history-index.ts";
 export {
   ThreadManager,
   type AskInput,
   type AskResult,
+  type ChildCompletionNotice,
   type ThreadRuntimeStatus,
+  type ThreadStatusDetail,
+  type ThreadWaitItem,
+  type ThreadWaitResult,
 } from "./runtime/thread-manager.ts";
 export {
   AutomationEngine,

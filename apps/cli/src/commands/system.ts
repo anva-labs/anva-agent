@@ -81,9 +81,18 @@ export const askCommand = defineCommand({
   args: {
     agent: { type: "string", description: "Agent slug (or pass as first positional)" },
     thread: { type: "string", description: "Existing thread ID to continue" },
+    parent: {
+      type: "string",
+      description: "Parent thread ID (defaults to ANVA_THREAD_ID inside a session)",
+    },
     harness: { type: "string", description: "Override harness when starting a new thread" },
     model: { type: "string", description: "Override or switch model on current harness" },
     async: { type: "boolean", description: "Return immediately after queueing the prompt" },
+    notify: {
+      type: "boolean",
+      description:
+        "Notify parent thread on completion with --async (default true in a session; pass --no-notify to disable)",
+    },
     json: { type: "boolean", description: "Print structured JSON output" },
   },
   async run({ args }) {
@@ -106,7 +115,7 @@ export const askCommand = defineCommand({
     if (!prompt) {
       throw new AnvaError(
         "invalid_args",
-        'Usage: anva ask [<agent>] "<prompt>" [--thread <id>] [--harness <h>] [--model <m>] [--async]',
+        'Usage: anva ask [<agent>] "<prompt>" [--thread <id>] [--harness <h>] [--model <m>] [--async] [--no-notify]',
       );
     }
     if (!args.thread && !agentSlug) {
@@ -116,9 +125,34 @@ export const askCommand = defineCommand({
       );
     }
 
+    const explicitParent = args.parent?.trim();
+    const envParent = rt.env.ANVA_THREAD_ID?.trim();
+    const parentThreadId =
+      explicitParent ||
+      (args.thread
+        ? envParent && envParent !== args.thread
+          ? envParent
+          : undefined
+        : envParent) ||
+      undefined;
+
+    if (args.notify === true && !args.async) {
+      throw new AnvaError("invalid_args", "--notify can only be used together with --async.");
+    }
+    if (args.notify === true && !parentThreadId) {
+      throw new AnvaError(
+        "invalid_args",
+        "--notify requires an active session (ANVA_THREAD_ID) or --parent <thread_id>.",
+      );
+    }
+
+    const notifyParent = Boolean(args.async && parentThreadId && args.notify !== false);
+
     const res = await apiRequest<AskResult>(conn, "POST", "/v1/ask", {
       ...(agentSlug ? { agent: agentSlug } : {}),
       ...(args.thread ? { threadId: args.thread } : {}),
+      ...(parentThreadId ? { parentThreadId } : {}),
+      ...(args.async ? { notifyParent } : {}),
       prompt,
       ...(args.harness ? { harness: args.harness } : {}),
       ...(args.model !== undefined ? { model: args.model } : {}),
@@ -126,7 +160,11 @@ export const askCommand = defineCommand({
     });
 
     if (res.async) {
-      emitResult(args.json, res, `Queued on thread ${res.threadId}`);
+      emitResult(
+        args.json,
+        res,
+        `Started thread ${res.threadId} (turn #${res.turnSeq}${notifyParent ? ", will notify parent" : ""})`,
+      );
       return;
     }
     emitResult(args.json, res, `[thread=${res.threadId}]\n${res.reply}`);

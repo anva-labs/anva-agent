@@ -100,7 +100,9 @@ You can also override the backend for a new thread with `--harness <id>`, or swi
 Inspect and manage threads:
 
 ```sh
-anva thread list [--agent main]
+anva thread list [--agent main] [--children] [--parent <thread_id>]
+anva thread status <thread_id>
+anva thread wait <thread_id...> [--timeout <seconds>] [--any]
 anva thread rename <thread_id> "Repo review"
 anva thread stop <thread_id>
 ```
@@ -108,8 +110,8 @@ anva thread stop <thread_id>
 Search past conversations across English and Chinese and read thread transcripts:
 
 ```sh
-anva session search "deploy checklist" --agent main
-anva session read <thread_id> --agent main [--tail 20] [--full]
+anva thread search "deploy checklist" --agent main
+anva thread read <thread_id> [--tail 20] [--full]
 anva db rebuild-fts
 ```
 

@@ -13,7 +13,7 @@ export interface SearchContextMessage {
   readonly createdAt: number;
 }
 
-export interface SessionSearchHit {
+export interface ThreadSearchHit {
   readonly threadId: string;
   readonly threadTitle: string;
   readonly threadSource: string;
@@ -24,8 +24,9 @@ export interface SessionSearchHit {
   readonly context: readonly SearchContextMessage[];
 }
 
-export interface SessionReadResult {
+export interface ThreadReadResult {
   readonly threadId: string;
+  readonly agentSlug: string;
   readonly title: string;
   readonly harness: string;
   readonly model: string | null;
@@ -84,7 +85,7 @@ export class HistoryIndex {
     readonly excludeThreadId?: string;
     readonly includeAutomation?: boolean;
     readonly limit?: number;
-  }): SessionSearchHit[] {
+  }): ThreadSearchHit[] {
     const terms = splitSearchTerms(options.query);
     if (terms.length === 0) {
       return [];
@@ -155,7 +156,7 @@ export class HistoryIndex {
     const rows = this.store.db.prepare(sql).all(...allParams) as SqlRow[];
 
     const seenThreads = new Set<string>();
-    const hits: SessionSearchHit[] = [];
+    const hits: ThreadSearchHit[] = [];
     for (const row of rows) {
       const msg: MessageRecord = toMessage(row);
       if (seenThreads.has(msg.threadId)) {
@@ -187,16 +188,18 @@ export class HistoryIndex {
   }
 
   read(options: {
-    readonly agentSlug: string;
+    readonly agentSlug?: string;
     readonly threadId: string;
     readonly tail?: number;
     readonly full?: boolean;
-  }): SessionReadResult {
+  }): ThreadReadResult {
     const thread = this.store.getThread(options.threadId);
-    if (!thread || thread.agentSlug !== options.agentSlug) {
+    if (!thread || (options.agentSlug && thread.agentSlug !== options.agentSlug)) {
       throw new AnvaError(
         "thread_not_found",
-        `Thread "${options.threadId}" was not found for agent "${options.agentSlug}".`,
+        options.agentSlug
+          ? `Thread "${options.threadId}" was not found for agent "${options.agentSlug}".`
+          : `Thread "${options.threadId}" was not found.`,
         404,
       );
     }
@@ -204,6 +207,7 @@ export class HistoryIndex {
     const full = options.full ?? false;
     return {
       threadId: thread.id,
+      agentSlug: thread.agentSlug,
       title: thread.title,
       harness: thread.harness,
       model: thread.model,

@@ -8,7 +8,6 @@ import { agentCommand } from "./commands/agent.ts";
 import { automationCommand } from "./commands/automation.ts";
 import { channelCommand } from "./commands/channel.ts";
 import { serviceCommand } from "./commands/service.ts";
-import { sessionCommand } from "./commands/session.ts";
 import { askCommand, dbCommand, harnessesCommand, startCommand } from "./commands/system.ts";
 import { threadCommand } from "./commands/thread.ts";
 import { type CliResult, runWithCliRuntime } from "./context.ts";
@@ -28,7 +27,6 @@ export const mainCommand = defineCommand({
     agent: agentCommand,
     ask: askCommand,
     thread: threadCommand,
-    session: sessionCommand,
     channel: channelCommand,
     automation: automationCommand,
     db: dbCommand,

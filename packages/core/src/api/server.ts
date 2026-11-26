@@ -41,10 +41,22 @@ const updateAgentSchema = z.object({
 const askSchema = z.object({
   agent: z.string().min(1).optional(),
   threadId: z.string().min(1).optional(),
+  parentThreadId: z.string().min(1).optional(),
+  notifyParent: z.boolean().optional(),
   prompt: z.string().min(1),
   harness: z.string().min(1).optional(),
   model: z.string().min(1).nullable().optional(),
   async: z.boolean().optional(),
+});
+
+const waitThreadsSchema = z.object({
+  threadIds: z.array(z.string().min(1)).min(1),
+  any: z.boolean().optional(),
+  timeoutMs: z.number().int().min(0).max(86_400_000).optional(),
+});
+
+const stopThreadSchema = z.object({
+  requestedByThreadId: z.string().min(1).optional(),
 });
 
 const switchModelSchema = z.object({
@@ -126,6 +138,18 @@ function tokenMatches(expected: string, actual: string): boolean {
 async function readJsonBody(c: Context): Promise<unknown> {
   try {
     return await c.req.json();
+  } catch {
+    throw new AnvaError("invalid_json", "Request body must be valid JSON.", 400);
+  }
+}
+
+async function readOptionalJsonBody(c: Context): Promise<unknown> {
+  const raw = await c.req.text();
+  if (!raw.trim()) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(raw) as unknown;
   } catch {
     throw new AnvaError("invalid_json", "Request body must be valid JSON.", 400);
   }
@@ -236,9 +260,25 @@ export function createApiApp(deps: ApiDeps): Hono {
 
   app.post("/v1/ask", async (c) => {
     const body = parseBody(askSchema, await readJsonBody(c));
+    if (body.notifyParent === true && !body.async) {
+      throw new AnvaError(
+        "invalid_request",
+        "notifyParent can only be used with async: true.",
+        400,
+      );
+    }
+    if (body.notifyParent === true && !body.parentThreadId) {
+      throw new AnvaError("invalid_request", "notifyParent requires parentThreadId.", 400);
+    }
+    const notifyParentThreadId =
+      body.async && body.parentThreadId && body.notifyParent !== false
+        ? body.parentThreadId
+        : undefined;
     const result = await deps.threads.ask({
       agentSlug: body.agent,
       threadId: body.threadId,
+      parentThreadId: body.parentThreadId,
+      notifyParentThreadId,
       prompt: body.prompt,
       harness: body.harness,
       model: body.model,
@@ -249,12 +289,14 @@ export function createApiApp(deps: ApiDeps): Hono {
   });
 
   app.get("/v1/threads", (c) => {
-    const agentSlug = c.req.query("agent");
+    const agentSlug = c.req.query("agent")?.trim() || undefined;
+    const parentThreadId = c.req.query("parent")?.trim() || undefined;
     const limitRaw = c.req.query("limit");
     const limit = limitRaw ? Number(limitRaw) : undefined;
     const threads = deps.store
       .listThreads({
-        agentSlug: agentSlug || undefined,
+        agentSlug,
+        parentThreadId,
         limit: Number.isFinite(limit) ? limit : undefined,
       })
       .map((t) => ({
@@ -264,46 +306,11 @@ export function createApiApp(deps: ApiDeps): Hono {
     return c.json({ threads });
   });
 
-  app.get("/v1/threads/:id", (c) => {
-    const id = c.req.param("id");
-    const thread = deps.store.getThread(id);
-    if (!thread) {
-      throw new AnvaError("thread_not_found", `Thread "${id}" was not found.`, 404);
-    }
-    return c.json({
-      thread: {
-        ...thread,
-        runtime: deps.threads.getThreadRuntimeStatus(thread.id),
-      },
-    });
-  });
-
-  app.patch("/v1/threads/:id/model", async (c) => {
-    const id = c.req.param("id");
-    const body = parseBody(switchModelSchema, await readJsonBody(c));
-    const thread = await deps.threads.switchModel(id, body.model);
-    return c.json({ thread });
-  });
-
-  app.patch("/v1/threads/:id/title", async (c) => {
-    const id = c.req.param("id");
-    const body = parseBody(renameThreadSchema, await readJsonBody(c));
-    const thread = deps.store.updateThreadTitle(id, body.title);
-    await deps.channels?.renameThreadTopic?.(id, body.title).catch(() => {});
-    return c.json({ thread });
-  });
-
-  app.post("/v1/threads/:id/stop", async (c) => {
-    const id = c.req.param("id");
-    const res = await deps.threads.stopThread(id);
-    return c.json(res);
-  });
-
-  app.get("/v1/sessions/search", (c) => {
+  app.get("/v1/threads/search", (c) => {
     const agentSlug = c.req.query("agent")?.trim();
     const query = c.req.query("q")?.trim();
     if (!agentSlug) {
-      throw new AnvaError("agent_required", "Provide ?agent=<slug> when searching sessions.", 400);
+      throw new AnvaError("agent_required", "Provide ?agent=<slug> when searching threads.", 400);
     }
     if (!query) {
       throw new AnvaError("query_required", "Provide a non-empty search query ?q=...", 400);
@@ -325,12 +332,39 @@ export function createApiApp(deps: ApiDeps): Hono {
     return c.json({ hits });
   });
 
-  app.get("/v1/sessions/:threadId/read", (c) => {
-    const threadId = c.req.param("threadId");
-    const agentSlug = c.req.query("agent")?.trim();
-    if (!agentSlug) {
-      throw new AnvaError("agent_required", "Provide ?agent=<slug> when reading a session.", 400);
+  app.post("/v1/threads/wait", async (c) => {
+    const body = parseBody(waitThreadsSchema, await readJsonBody(c));
+    const result = await deps.threads.waitThreads({
+      threadIds: body.threadIds,
+      any: body.any,
+      timeoutMs: body.timeoutMs,
+      signal: c.req.raw.signal,
+    });
+    return c.json(result);
+  });
+
+  app.get("/v1/threads/:id", (c) => {
+    const id = c.req.param("id");
+    const thread = deps.store.getThread(id);
+    if (!thread) {
+      throw new AnvaError("thread_not_found", `Thread "${id}" was not found.`, 404);
     }
+    return c.json({
+      thread: {
+        ...thread,
+        runtime: deps.threads.getThreadRuntimeStatus(thread.id),
+      },
+    });
+  });
+
+  app.get("/v1/threads/:id/status", (c) => {
+    const id = c.req.param("id");
+    return c.json(deps.threads.getThreadStatus(id));
+  });
+
+  app.get("/v1/threads/:id/read", (c) => {
+    const threadId = c.req.param("id");
+    const agentSlug = c.req.query("agent")?.trim() || undefined;
     const tailRaw = c.req.query("tail");
     const tail = tailRaw ? Number(tailRaw) : undefined;
     const full = c.req.query("full") === "true";
@@ -341,6 +375,31 @@ export function createApiApp(deps: ApiDeps): Hono {
       full,
     });
     return c.json(result);
+  });
+
+  app.patch("/v1/threads/:id/model", async (c) => {
+    const id = c.req.param("id");
+    const body = parseBody(switchModelSchema, await readJsonBody(c));
+    const thread = await deps.threads.switchModel(id, body.model);
+    return c.json({ thread });
+  });
+
+  app.patch("/v1/threads/:id/title", async (c) => {
+    const id = c.req.param("id");
+    const body = parseBody(renameThreadSchema, await readJsonBody(c));
+    const thread = deps.store.updateThreadTitle(id, body.title);
+    await deps.channels?.renameThreadTopic?.(id, body.title).catch(() => {});
+    return c.json({ thread });
+  });
+
+  app.post("/v1/threads/:id/stop", async (c) => {
+    const id = c.req.param("id");
+    const rawBody = await readOptionalJsonBody(c);
+    const body = rawBody !== undefined ? parseBody(stopThreadSchema, rawBody) : undefined;
+    const res = await deps.threads.stopThread(id, {
+      requestedByThreadId: body?.requestedByThreadId,
+    });
+    return c.json(res);
   });
 
   app.post("/v1/db/rebuild-fts", (c) => {
