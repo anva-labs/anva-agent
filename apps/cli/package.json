@@ -1,0 +1,24 @@
+{
+  "name": "@anva/cli",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "anva": "./dist/main.js"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsrs --noEmit",
+    "build": "tsrs -p tsconfig.build.json && chmod +x dist/main.js"
+  },
+  "dependencies": {
+    "@anva/channels": "workspace:*",
+    "@anva/core": "workspace:*",
+    "citty": "0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsrs": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

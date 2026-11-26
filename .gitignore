@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.anva/
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+coverage/
+.vite-plus/
+.tsbuildinfo
+*.tsbuildinfo

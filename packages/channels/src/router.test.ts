@@ -1,0 +1,948 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  AnvaStore,
+  type HarnessAdapter,
+  type HarnessInputImage,
+  type HarnessOpenOptions,
+  type HarnessSessionCallbacks,
+  type HarnessSessionHandle,
+  loadAgentEnv,
+  resolveAnvaPaths,
+  setAgentEnvVar,
+  ThreadManager,
+} from "@anva/core";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { createChannelRouter, type TelegramUpdate } from "./index.ts";
+
+interface RecordedApiCall {
+  readonly method: string;
+  readonly body: Record<string, unknown>;
+}
+
+function createMockTelegramFetch(options: { readonly rejectToken?: string } = {}) {
+  const calls: RecordedApiCall[] = [];
+  const queue: TelegramUpdate[] = [];
+  let nextMsgId = 1000;
+  let notifyPoll: (() => void) | null = null;
+
+  const pushUpdate = (update: TelegramUpdate) => {
+    queue.push(update);
+    const wake = notifyPoll;
+    notifyPoll = null;
+    wake?.();
+  };
+
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/file/bot")) {
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    }
+
+    const match = /\/bot([^/]+)\/([A-Za-z0-9_]+)$/.exec(url);
+    const token = match?.[1] ?? "";
+    const method = match?.[2] ?? "";
+
+    if (options.rejectToken && token === options.rejectToken) {
+      return Response.json(
+        { ok: false, error_code: 401, description: "Unauthorized" },
+        { status: 401 },
+      );
+    }
+
+    let body: Record<string, unknown> = {};
+    if (typeof init?.body === "string") {
+      body = JSON.parse(init.body) as Record<string, unknown>;
+    } else if (init?.body instanceof FormData) {
+      for (const [k, v] of init.body.entries()) {
+        body[k] = typeof v === "string" ? v : `blob:${(v as File).name}`;
+      }
+    }
+
+    if (method === "getUpdates") {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          notifyPoll = resolve;
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              if (notifyPoll === resolve) {
+                notifyPoll = null;
+              }
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      }
+      if (init?.signal?.aborted) {
+        const err = new Error("Aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      const batch = queue.splice(0, queue.length);
+      return Response.json({ ok: true, result: batch });
+    }
+
+    calls.push({ method, body });
+
+    if (method === "getMe") {
+      return Response.json({
+        ok: true,
+        result: { id: 777, is_bot: true, first_name: "AnvaDemo", username: "anva_demo_bot" },
+      });
+    }
+    if (
+      method === "setMyCommands" ||
+      method === "sendChatAction" ||
+      method === "setMessageReaction" ||
+      method === "editForumTopic"
+    ) {
+      return Response.json({ ok: true, result: true });
+    }
+    if (method === "getFile") {
+      return Response.json({
+        ok: true,
+        result: { file_id: body.file_id, file_path: "photos/sample.jpg" },
+      });
+    }
+    if (method === "editMessageText") {
+      return Response.json({ ok: true, result: true });
+    }
+    if (method === "sendMessage" || method === "sendPhoto" || method === "sendDocument") {
+      if (
+        method === "sendMessage" &&
+        body.parse_mode === "HTML" &&
+        typeof body.text === "string" &&
+        body.text.includes("BAD_HTML_TRIGGER")
+      ) {
+        return Response.json(
+          { ok: false, error_code: 400, description: "Bad Request: can't parse entities" },
+          { status: 400 },
+        );
+      }
+      nextMsgId += 1;
+      return Response.json({
+        ok: true,
+        result: {
+          message_id: nextMsgId,
+          chat: { id: Number(body.chat_id), type: "private" },
+          date: Math.floor(Date.now() / 1000),
+          text: typeof body.text === "string" ? body.text : undefined,
+        },
+      });
+    }
+    return Response.json({ ok: false, description: `Unhandled ${method}` }, { status: 400 });
+  }) as typeof fetch;
+
+  return { fetchImpl, calls, pushUpdate };
+}
+
+function createFakeHarness() {
+  const delivered: Array<{
+    readonly harness: string;
+    readonly text: string;
+    readonly model: string | null;
+    readonly images?: readonly HarnessInputImage[];
+  }> = [];
+  let seq = 0;
+
+  const harness: HarnessAdapter = {
+    has: (id) => id === "mock" || id === "alt",
+    refusesEnv: () => false,
+    catalog: () =>
+      Promise.resolve([
+        {
+          id: "mock",
+          name: "Mock",
+          installed: true,
+          noEnv: false,
+          auth: { kind: "signed_in", account: "tester" },
+        },
+        {
+          id: "alt",
+          name: "Alt",
+          installed: true,
+          noEnv: false,
+          auth: { kind: "signed_in", account: "tester-alt" },
+        },
+      ]),
+    probe: (harnessId) =>
+      Promise.resolve({
+        id: harnessId,
+        name: harnessId === "alt" ? "Alt" : "Mock",
+        installed: true,
+        version: "1.0.0",
+        noEnv: false,
+        auth: { kind: "signed_in", account: "tester", plan: "Pro" },
+        usage: {
+          rateLimited: false,
+          windows: [{ label: "5h", usedRatio: 0.25 }],
+        },
+      }),
+    models: (harnessId) =>
+      Promise.resolve({
+        kind: "ok",
+        models:
+          harnessId === "alt"
+            ? [
+                { id: "alt-1", name: "Alt 1", isDefault: true },
+                { id: "alt-2", name: "Alt 2" },
+              ]
+            : [
+                { id: "mock-1", name: "Mock 1", isDefault: true },
+                { id: "mock-2", name: "Mock 2" },
+              ],
+      }),
+    open: (options: HarnessOpenOptions, callbacks: HarnessSessionCallbacks) => {
+      seq += 1;
+      const defaultModel = options.harness === "alt" ? "alt-1" : "mock-1";
+      const model = options.model ?? defaultModel;
+      let running = false;
+      const steeredNotes: string[] = [];
+      const handle: HarnessSessionHandle = {
+        id: options.resume ?? `sess_${seq}`,
+        noEnv: false,
+        supportsImages: true,
+        deliver: (text: string, _inputId: string, images?: readonly HarnessInputImage[]) => {
+          delivered.push({ harness: options.harness, text, model, images });
+          if (running) {
+            steeredNotes.push(text);
+            return Promise.resolve("steered");
+          }
+          running = true;
+          if (text === "wait-turn") {
+            return Promise.resolve("prompted");
+          }
+          if (text === "steer-slow") {
+            setTimeout(() => {
+              running = false;
+              const suffix = steeredNotes.splice(0, steeredNotes.length).join("+");
+              callbacks.onTextDelta(`steered-reply:${suffix}`);
+              callbacks.onTurnEnded({ kind: "completed" });
+            }, 80);
+            return Promise.resolve("prompted");
+          }
+          if (text.startsWith("use-tools")) {
+            setTimeout(() => {
+              callbacks.onTextDelta("Checking files first.");
+              callbacks.onToolCallStarted?.("read");
+            }, 10);
+            setTimeout(() => {
+              callbacks.onTextDelta("Running command next.");
+              callbacks.onToolCallStarted?.("bash");
+            }, 30);
+            setTimeout(() => {
+              running = false;
+              callbacks.onTextDelta("Tool answer with **bold** and `code`");
+              callbacks.onTurnEnded({ kind: "completed" });
+            }, 60);
+            return Promise.resolve("prompted");
+          }
+          if (text === "tools-no-final") {
+            setTimeout(() => {
+              callbacks.onTextDelta("Intermediate progress only.");
+              callbacks.onToolCallStarted?.("read");
+            }, 10);
+            setTimeout(() => {
+              running = false;
+              callbacks.onTurnEnded({ kind: "completed" });
+            }, 30);
+            return Promise.resolve("prompted");
+          }
+          queueMicrotask(() => {
+            running = false;
+            callbacks.onTextDelta(`echo[${model}]:${text}`);
+            callbacks.onTurnEnded({ kind: "completed" });
+          });
+          return Promise.resolve("prompted");
+        },
+        abort: () => {
+          running = false;
+          callbacks.onTurnEnded({ kind: "aborted" });
+          return Promise.resolve();
+        },
+        dispose: () => Promise.resolve(),
+        contextUsage: () => ({ tokens: 1200, contextWindow: 100_000, percent: 1.2 }),
+        activeModel: () => model,
+        isRunning: () => running,
+      };
+      return Promise.resolve(handle);
+    },
+  };
+
+  return { harness, delivered };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((r) => setTimeout(r, 15));
+  }
+}
+
+const cleanups: Array<() => Promise<void>> = [];
+
+afterEach(async () => {
+  while (cleanups.length > 0) {
+    const fn = cleanups.pop();
+    if (fn) {
+      await fn();
+    }
+  }
+});
+
+describe("ChannelRouter + TelegramChannel", () => {
+  it("routes DMs/topics, downloads attachments, handles 5 slash commands, steers, and sends files", async () => {
+    const home = mkdtempSync(join(tmpdir(), "anva-chan-test-"));
+    const paths = resolveAnvaPaths(home);
+    const store = new AnvaStore(paths.db);
+    const { harness, delivered } = createFakeHarness();
+    const threads = new ThreadManager({
+      store,
+      harness,
+      paths,
+      getApiConfig: () => ({ url: "http://127.0.0.1:1", token: "tok" }),
+    });
+    const tg = createMockTelegramFetch({ rejectToken: "bad-token" });
+    const router = createChannelRouter(
+      { store, harness, threads, paths },
+      {
+        fetchImpl: tg.fetchImpl,
+        pollTimeoutSec: 1,
+        typingIntervalMs: 5000,
+        toolFlushThrottleMs: 0,
+      },
+    );
+
+    cleanups.push(async () => {
+      await router.stop();
+      await threads.shutdown();
+      store.close();
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    store.createAgent({ slug: "coder", name: "Coder", defaultHarness: "mock" });
+
+    // Rejects bad token during connect
+    setAgentEnvVar(paths.agentEnv("coder"), "TELEGRAM_BOT_TOKEN", "bad-token");
+    await expect(
+      router.connect({ platform: "telegram", agentSlug: "coder" }),
+    ).rejects.toMatchObject({ code: "channel_auth_failed" });
+
+    // Connects valid token with no allowlist yet -> fail-closed until paired via one-time deep link
+    setAgentEnvVar(paths.agentEnv("coder"), "TELEGRAM_BOT_TOKEN", "good-token");
+    const conn = await router.connect({ platform: "telegram", agentSlug: "coder" });
+    expect(conn.botName).toBe("@anva_demo_bot");
+    expect(conn.connected).toBe(true);
+    expect(conn.pairingUrl).toMatch(/^https:\/\/t\.me\/anva_demo_bot\?start=[A-Za-z0-9_-]+$/);
+    const pairingCode = conn.pairingUrl!.split("?start=")[1]!;
+
+    // Unpaired messages (stranger, wrong code) and group messages are silently denied
+    tg.pushUpdate({
+      update_id: 1,
+      message: {
+        message_id: 10,
+        chat: { id: -500, type: "group" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1000,
+        text: "ignore group",
+      },
+    });
+    tg.pushUpdate({
+      update_id: 2,
+      message: {
+        message_id: 98,
+        chat: { id: 999, type: "private" },
+        from: { id: 999, is_bot: false, first_name: "Stranger" },
+        date: 1000,
+        text: "unauthorized attempt",
+        photo: [{ file_id: "blocked_photo", width: 10, height: 10 }],
+      },
+    });
+    tg.pushUpdate({
+      update_id: 20,
+      message: {
+        message_id: 97,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1000,
+        text: "/start wrongcode",
+      },
+    });
+
+    // Valid one-time /start <code> pairs user 42 into .env and replies
+    tg.pushUpdate({
+      update_id: 21,
+      message: {
+        message_id: 96,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1000,
+        text: `/start ${pairingCode}`,
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("Paired! You can start chatting now."),
+      ),
+    );
+    expect(loadAgentEnv(paths.agentHome("coder")).vars.TELEGRAM_ALLOWED_USER_IDS).toBe("42");
+
+    // Replaying the same single-use pairing code from user 999 is denied
+    tg.pushUpdate({
+      update_id: 22,
+      message: {
+        message_id: 99,
+        chat: { id: 999, type: "private" },
+        from: { id: 999, is_bot: false, first_name: "Stranger" },
+        date: 1000,
+        text: `/start ${pairingCode}`,
+      },
+    });
+    tg.pushUpdate({
+      update_id: 4,
+      message: {
+        message_id: 12,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1002,
+        caption: "look at photo",
+        photo: [{ file_id: "photo_1", width: 100, height: 100 }],
+      },
+    });
+
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("echo[mock-1]:look at photo") &&
+          tg.calls.some(
+            (r) =>
+              r.method === "setMessageReaction" &&
+              Array.isArray(r.body.reaction) &&
+              r.body.reaction.length === 0,
+          ),
+      ),
+    );
+    expect(tg.calls.some((c) => c.method === "getFile" && c.body.file_id === "blocked_photo")).toBe(
+      false,
+    );
+    expect(
+      tg.calls.some(
+        (c) =>
+          c.method === "setMessageReaction" &&
+          c.body.message_id === 12 &&
+          Array.isArray(c.body.reaction) &&
+          (c.body.reaction[0] as { emoji?: string } | undefined)?.emoji === "👀",
+      ),
+    ).toBe(true);
+    expect(tg.calls.some((c) => c.method === "editMessageText")).toBe(false);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.text).toContain("[Attachment:");
+    const attPathMatch = /\[Attachment: ([^\s]+photo-12\.jpg)/.exec(delivered[0]?.text ?? "");
+    expect(attPathMatch?.[1]).toBeTruthy();
+    expect(attPathMatch![1]!.startsWith(paths.agentAttachments("coder"))).toBe(true);
+    expect(delivered[0]?.images).toEqual([{ path: attPathMatch![1]!, mediaType: "image/jpeg" }]);
+    expect(readFileSync(attPathMatch![1]!)).toEqual(Buffer.from([1, 2, 3, 4]));
+
+    // DM Threaded Mode topic routes separately, streams tool trace, and renders HTML without auto-titling
+    tg.pushUpdate({
+      update_id: 5,
+      message: {
+        message_id: 13,
+        message_thread_id: 88,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1003,
+        text: "use-tools",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("<b>bold</b>") &&
+          c.body.text.includes("<code>code</code>") &&
+          c.body.parse_mode === "HTML" &&
+          c.body.message_thread_id === 88,
+      ),
+    );
+    expect(
+      tg.calls.some(
+        (c) =>
+          (c.method === "editMessageText" || c.method === "sendMessage") &&
+          typeof c.body.text === "string" &&
+          c.body.text === "🔧 read → bash",
+      ),
+    ).toBe(true);
+
+    const segmentIndex = (text: string) =>
+      tg.calls.findIndex(
+        (c) =>
+          c.method === "sendMessage" && typeof c.body.text === "string" && c.body.text === text,
+      );
+    const toolTraceIndex = tg.calls.findIndex(
+      (c) =>
+        (c.method === "sendMessage" || c.method === "editMessageText") &&
+        typeof c.body.text === "string" &&
+        c.body.text.startsWith("🔧 read"),
+    );
+    const preToolIndex = segmentIndex("Checking files first.");
+    const midToolIndex = segmentIndex("Running command next.");
+    const finalAnswerIndex = tg.calls.findIndex(
+      (c) =>
+        c.method === "sendMessage" &&
+        typeof c.body.text === "string" &&
+        c.body.text.includes("<b>bold</b>"),
+    );
+    expect(preToolIndex).not.toBe(-1);
+    expect(midToolIndex).not.toBe(-1);
+    expect(toolTraceIndex).not.toBe(-1);
+    expect(finalAnswerIndex).not.toBe(-1);
+    expect(preToolIndex).toBeLessThan(toolTraceIndex);
+    expect(toolTraceIndex).toBeLessThan(midToolIndex);
+    expect(midToolIndex).toBeLessThan(finalAnswerIndex);
+    expect(tg.calls[finalAnswerIndex]?.body.text).not.toContain("Checking files first");
+    expect(tg.calls[finalAnswerIndex]?.body.text).not.toContain("Running command next");
+    expect(tg.calls.some((c) => c.method === "editForumTopic")).toBe(false);
+    const topicRoute = store.getChannelRoute(conn.id, "42", "88");
+    const rootRoute = store.getChannelRoute(conn.id, "42", "");
+    expect(topicRoute?.threadId).toBeTruthy();
+    expect(rootRoute?.threadId).toBeTruthy();
+    expect(topicRoute?.threadId).not.toBe(rootRoute?.threadId);
+
+    tg.pushUpdate({
+      update_id: 30,
+      message: {
+        message_id: 60,
+        message_thread_id: 89,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1030,
+        text: "tools-no-final",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          c.body.message_thread_id === 89 &&
+          c.body.text === "Intermediate progress only.",
+      ),
+    );
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "setMessageReaction" &&
+          c.body.message_id === 60 &&
+          Array.isArray(c.body.reaction) &&
+          c.body.reaction.length === 0,
+      ),
+    );
+    expect(
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          c.body.message_thread_id === 89 &&
+          c.body.text === "(empty reply)",
+      ),
+    ).toBe(false);
+
+    // 5 slash commands consume 0 model turns
+    const countBeforeSlash = delivered.length;
+    tg.pushUpdate({
+      update_id: 6,
+      message: {
+        message_id: 14,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1004,
+        text: "/usage",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("5h: 25%"),
+      ),
+    );
+
+    tg.pushUpdate({
+      update_id: 6,
+      message: {
+        message_id: 15,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1005,
+        text: "/status",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes(`Thread: ${rootRoute!.threadId}`),
+      ),
+    );
+
+    tg.pushUpdate({
+      update_id: 7,
+      message: {
+        message_id: 16,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1006,
+        text: "/model mock-2",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("mock-2"),
+      ),
+    );
+
+    tg.pushUpdate({
+      update_id: 8,
+      message: {
+        message_id: 17,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1007,
+        text: "/new",
+      },
+    });
+    await waitFor(() => store.getChannelRoute(conn.id, "42", "") === null);
+    expect(delivered).toHaveLength(countBeforeSlash);
+
+    // /stop aborts active turn on the new thread created by the next message
+    tg.pushUpdate({
+      update_id: 9,
+      message: {
+        message_id: 18,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1008,
+        text: "wait-turn",
+      },
+    });
+    await waitFor(() => {
+      const r = store.getChannelRoute(conn.id, "42", "");
+      return Boolean(r && threads.getThreadRuntimeStatus(r.threadId).running);
+    });
+    const replacedRoute = store.getChannelRoute(conn.id, "42", "")!;
+    expect(replacedRoute.threadId).not.toBe(rootRoute?.threadId);
+    tg.pushUpdate({
+      update_id: 10,
+      message: {
+        message_id: 19,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1009,
+        text: "/stop",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("Stopped thread"),
+      ),
+    );
+
+    // Steer dedup: second message into active turn reacts with 👍 and sends only ONE final reply
+    tg.pushUpdate({
+      update_id: 11,
+      message: {
+        message_id: 20,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1010,
+        text: "steer-slow",
+      },
+    });
+    await waitFor(() => threads.getThreadRuntimeStatus(replacedRoute.threadId).running);
+    tg.pushUpdate({
+      update_id: 12,
+      message: {
+        message_id: 21,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 1011,
+        text: "steer-addon",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("steered-reply:steer-addon"),
+      ),
+    );
+    const steeredReplies = tg.calls.filter(
+      (c) =>
+        c.method === "sendMessage" &&
+        typeof c.body.text === "string" &&
+        c.body.text.includes("steered-reply:steer-addon"),
+    );
+    expect(steeredReplies).toHaveLength(1);
+    expect(
+      tg.calls.some(
+        (c) =>
+          c.method === "setMessageReaction" &&
+          c.body.message_id === 21 &&
+          Array.isArray(c.body.reaction) &&
+          (c.body.reaction[0] as { emoji?: string } | undefined)?.emoji === "👍",
+      ),
+    ).toBe(true);
+
+    // Proactive send by thread ID + photo upload + HTML 400 plain-text fallback
+    await router.send({
+      target: topicRoute!.threadId,
+      text: "BAD_HTML_TRIGGER plain fallback",
+    });
+    expect(
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          c.body.parse_mode === undefined &&
+          c.body.text === "BAD_HTML_TRIGGER plain fallback",
+      ),
+    ).toBe(true);
+
+    const pngPath = join(home, "chart.png");
+    writeFileSync(pngPath, Buffer.from([137, 80, 78, 71]));
+    const sendRes = await router.send({
+      target: topicRoute!.threadId,
+      text: "proactive report",
+      filePath: pngPath,
+    });
+    expect(sendRes.externalChatId).toBe("42");
+    expect(sendRes.externalThreadId).toBe("88");
+    expect(
+      tg.calls.some(
+        (c) =>
+          c.method === "sendPhoto" &&
+          c.body.message_thread_id === "88" &&
+          c.body.caption === "proactive report",
+      ),
+    ).toBe(true);
+  });
+
+  it("supports tap-to-copy /model listing, /new <harness>, and /new unbinding", async () => {
+    const home = mkdtempSync(join(tmpdir(), "anva-model-cmd-test-"));
+    const paths = resolveAnvaPaths(home);
+    const store = new AnvaStore(paths.db);
+    const { harness, delivered } = createFakeHarness();
+    const threads = new ThreadManager({
+      store,
+      harness,
+      paths,
+      getApiConfig: () => ({ url: "http://127.0.0.1:1", token: "tok" }),
+    });
+    const tg = createMockTelegramFetch();
+    const router = createChannelRouter(
+      { store, harness, threads, paths },
+      {
+        fetchImpl: tg.fetchImpl,
+        pollTimeoutSec: 1,
+        typingIntervalMs: 5000,
+        toolFlushThrottleMs: 0,
+      },
+    );
+
+    cleanups.push(async () => {
+      await router.stop();
+      await threads.shutdown();
+      store.close();
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    store.createAgent({ slug: "coder", name: "Coder", defaultHarness: "mock" });
+    setAgentEnvVar(paths.agentEnv("coder"), "TELEGRAM_BOT_TOKEN", "good-token");
+    setAgentEnvVar(paths.agentEnv("coder"), "TELEGRAM_ALLOWED_USER_IDS", "42");
+    const conn = await router.connect({ platform: "telegram", agentSlug: "coder" });
+
+    // 1. Fresh topic: /model lists default harness models as tap-to-copy <code>/model ...</code> without creating a thread.
+    tg.pushUpdate({
+      update_id: 100,
+      message: {
+        message_id: 50,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2000,
+        text: "/model",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          c.body.message_thread_id === 200 &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("<code>/model mock-1</code>"),
+      ),
+    );
+    const firstList = tg.calls.find(
+      (c) =>
+        c.method === "sendMessage" &&
+        c.body.message_thread_id === 200 &&
+        typeof c.body.text === "string" &&
+        c.body.text.includes("<code>/model mock-1</code>"),
+    )!;
+    expect(firstList.body.text).toContain("<code>/model default</code>");
+    expect(firstList.body.text).toContain("<code>/model mock-2</code>");
+    expect(firstList.body.reply_markup).toBeUndefined();
+    expect(store.getChannelRoute(conn.id, "42", "200")).toBeNull();
+
+    // 2. /new alt starts a thread pinned to alt, and /model lists alt's models.
+    tg.pushUpdate({
+      update_id: 101,
+      message: {
+        message_id: 51,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2001,
+        text: "/new alt",
+      },
+    });
+    await waitFor(() => store.getChannelRoute(conn.id, "42", "200") !== null);
+    const altRoute = store.getChannelRoute(conn.id, "42", "200")!;
+    expect(store.getThread(altRoute.threadId)?.harness).toBe("alt");
+
+    tg.pushUpdate({
+      update_id: 102,
+      message: {
+        message_id: 52,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2002,
+        text: "/model",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          c.body.message_thread_id === 200 &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("<code>/model alt-2</code>"),
+      ),
+    );
+
+    // 3. /model alt-2 switches model, message runs on alt/alt-2, and /model default resets to null.
+    tg.pushUpdate({
+      update_id: 103,
+      message: {
+        message_id: 53,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2003,
+        text: "/model alt-2",
+      },
+    });
+    await waitFor(() => store.getThread(altRoute.threadId)?.model === "alt-2");
+
+    tg.pushUpdate({
+      update_id: 104,
+      message: {
+        message_id: 54,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2004,
+        text: "hello alt",
+      },
+    });
+    await waitFor(() => delivered.some((d) => d.text === "hello alt"));
+    expect(delivered.at(-1)?.harness).toBe("alt");
+    expect(delivered.at(-1)?.model).toBe("alt-2");
+
+    tg.pushUpdate({
+      update_id: 105,
+      message: {
+        message_id: 55,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2005,
+        text: "/model default",
+      },
+    });
+    await waitFor(() => store.getThread(altRoute.threadId)?.model === null);
+
+    // 4. /new unbinds the route; invalid /model fails without creating a thread; valid /model creates on default harness.
+    tg.pushUpdate({
+      update_id: 106,
+      message: {
+        message_id: 56,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2006,
+        text: "/new",
+      },
+    });
+    await waitFor(() => store.getChannelRoute(conn.id, "42", "200") === null);
+
+    tg.pushUpdate({
+      update_id: 107,
+      message: {
+        message_id: 57,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2007,
+        text: "/model nonexistent",
+      },
+    });
+    await waitFor(() =>
+      tg.calls.some(
+        (c) =>
+          c.method === "sendMessage" &&
+          c.body.message_thread_id === 200 &&
+          typeof c.body.text === "string" &&
+          c.body.text.includes("Failed to switch model"),
+      ),
+    );
+    expect(store.getChannelRoute(conn.id, "42", "200")).toBeNull();
+
+    tg.pushUpdate({
+      update_id: 108,
+      message: {
+        message_id: 58,
+        message_thread_id: 200,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, is_bot: false, first_name: "Alice" },
+        date: 2008,
+        text: "/model mock-2",
+      },
+    });
+    await waitFor(() => store.getChannelRoute(conn.id, "42", "200") !== null);
+    const freshRoute = store.getChannelRoute(conn.id, "42", "200")!;
+    expect(freshRoute.threadId).not.toBe(altRoute.threadId);
+    expect(store.getThread(freshRoute.threadId)?.harness).toBe("mock");
+    expect(store.getThread(freshRoute.threadId)?.model).toBe("mock-2");
+  });
+});

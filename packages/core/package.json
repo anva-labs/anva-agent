@@ -1,0 +1,29 @@
+{
+  "name": "@anva/core",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsrs --noEmit",
+    "build": "tsrs -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@botiverse/oar": "0.130.1",
+    "@hono/node-server": "2.1.11",
+    "croner": "11.0.1",
+    "hono": "4.13.21",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsrs": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

@@ -1,0 +1,12 @@
+diff --git a/dist/runtimes/devin/session.js b/dist/runtimes/devin/session.js
+--- a/dist/runtimes/devin/session.js
++++ b/dist/runtimes/devin/session.js
+@@ -41,6 +41,8 @@ export const devinAcpProfile = {
+         refuseSessionOptions(devinRefusedSessionOptions, options);
+     },
+     modelViaConfigOption: true,
++    // Devin sends the full shell command in terminal/create without args.
++    terminalShellCommand: true,
+     openFailure: devinOpenFailure,
+     failureOutcome: devinFailureOutcome,
+     configureSession: async ({ request, sessionId, response }) => {

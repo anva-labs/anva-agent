@@ -1,0 +1,26 @@
+{
+  "name": "anva-workspace",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "fmt": "vp fmt",
+    "lint": "vp lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vp test run",
+    "check": "pnpm build && pnpm typecheck && vp check --no-fmt && pnpm test",
+    "build": "pnpm -r build"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsrs": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@12.23.0"
+}

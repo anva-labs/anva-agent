@@ -1,0 +1,26 @@
+{
+  "name": "@anva/channels",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsrs --noEmit",
+    "build": "tsrs -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@anva/core": "workspace:*",
+    "marked": "18.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsrs": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

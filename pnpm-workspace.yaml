@@ -1,0 +1,38 @@
+packages:
+  - packages/*
+  - apps/*
+
+catalog:
+  vite-plus: 1.8.0
+  vite: npm:@voidzero-dev/vite-plus-core@8.3.8001
+  vitest: 5.1.1
+  tsrs: 7.1.0-beta.tsrs4
+  "@types/node": 26.6.6
+
+overrides:
+  vite: npm:@voidzero-dev/vite-plus-core@8.3.8001
+  vitest: 5.1.1
+
+peerDependencyRules:
+  allowedVersions:
+    vite: "*"
+
+autoInstallPeers: false
+saveExact: true
+minimumReleaseAgeExclude:
+  - "@botiverse/oar@0.130.1"
+  - "@voidzero-dev/vite-plus-core@8.3.8001"
+  - "@voidzero-dev/vite-plus-darwin-arm64@1.8.0"
+  - "@voidzero-dev/vite-plus-darwin-x64@1.8.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.8.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.8.0"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.8.0"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@1.8.0"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.8.0"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.8.0"
+  - vite-plus@1.8.0
+allowBuilds:
+  "@google/genai": false
+  protobufjs: false
+patchedDependencies:
+  "@botiverse/oar@0.130.1": patches/@botiverse__oar@0.130.1.patch
