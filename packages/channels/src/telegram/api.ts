@@ -205,13 +205,24 @@ export class TelegramApi {
     readonly chatId: string;
     readonly messageThreadId?: string;
     readonly text: string;
-    readonly parseMode?: "HTML";
   }): Promise<TelegramMessage> {
     const threadNum = toThreadIdParam(params.messageThreadId);
     return this.callJson<TelegramMessage>("sendMessage", {
       chat_id: params.chatId,
       text: params.text,
-      ...(params.parseMode ? { parse_mode: params.parseMode } : {}),
+      ...(threadNum !== undefined ? { message_thread_id: threadNum } : {}),
+    });
+  }
+
+  sendRichMessage(params: {
+    readonly chatId: string;
+    readonly messageThreadId?: string;
+    readonly markdown: string;
+  }): Promise<TelegramMessage> {
+    const threadNum = toThreadIdParam(params.messageThreadId);
+    return this.callJson<TelegramMessage>("sendRichMessage", {
+      chat_id: params.chatId,
+      rich_message: { markdown: params.markdown },
       ...(threadNum !== undefined ? { message_thread_id: threadNum } : {}),
     });
   }
@@ -220,14 +231,12 @@ export class TelegramApi {
     readonly chatId: string;
     readonly messageId: string | number;
     readonly text: string;
-    readonly parseMode?: "HTML";
   }): Promise<void> {
     try {
       await this.callJson<TelegramMessage | boolean>("editMessageText", {
         chat_id: params.chatId,
         message_id: Number(params.messageId),
         text: params.text,
-        ...(params.parseMode ? { parse_mode: params.parseMode } : {}),
       });
     } catch (error) {
       if (

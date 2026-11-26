@@ -52,7 +52,8 @@ anva agent env set main TELEGRAM_ALLOWED_USER_IDS "123456789,987654321"
 - **1:1 thread mapping**: Each DM chat (or each `message_thread_id` in Threaded Mode) maps to a single persistent Anva thread. Topics can be renamed anytime with `anva thread rename`.
 - **Immediate delivery & concurrent steer**: Inbound messages are delivered immediately without artificial buffering. Sending another message while a turn is running steers the active turn (marked with `👍`) rather than generating duplicate replies.
 - **Reactions, live text segments, and tool trace**: Inbound messages receive a `👀` reaction and typing indicators. Assistant text emitted before a tool call is sent as its own live message; Anva also updates a single status message with live tool progress (for example `🔧 read → bash → edit`).
-- **Formatting and attachments**: Reply text renders Markdown to Telegram HTML and falls back to plain text if formatting fails. Inbound files are saved under `~/.anva/agents/<slug>/attachments/`, and supported images (`png`, `jpeg`, `gif`, `webp`) are passed natively when the thread's agent supports image input.
+- **Message formatting**: Replies and proactive text use [Rich Messages](https://core.telegram.org/bots/api#rich-messages), which require Bot API 10.1 or later. Anva sends each text message as a single Markdown payload. Telegram renders native tables, supported HTML tags, and standalone media links according to its [Rich Markdown rules](https://core.telegram.org/bots/api#rich-markdown-style). Telegram rejects messages that exceed its [rich message limits](https://core.telegram.org/bots/api#rich-message-limits).
+- **Attachments**: Inbound files are saved under `~/.anva/agents/<slug>/attachments/`, and supported images (`png`, `jpeg`, `gif`, `webp`) are passed natively when the thread's agent supports image input.
 - **Proactive delivery**: Normal replies in a bound conversation are delivered automatically. For out-of-band messages or files from inside a script or another thread, use:
 
 ```sh
@@ -63,13 +64,13 @@ Inside an active session, `<target>` defaults to `$ANVA_THREAD_ID`; explicitly p
 
 ### Slash commands (zero model tokens)
 
-| Command          | Behavior                                                                                        |
-| ---------------- | ----------------------------------------------------------------------------------------------- |
-| `/new [harness]` | Unbind the current thread (or start a fresh thread on `<harness>`)                              |
-| `/stop`          | Abort the active turn on the current thread                                                     |
-| `/model [model]` | List tap-to-copy `/model <id>` options for the current harness, or switch to `<id>` / `default` |
-| `/status`        | Display the thread's harness, model, runtime state, and context usage                           |
-| `/usage`         | Query harness auth status and subscription quota windows                                        |
+| Command          | Behavior                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `/new [harness]` | Unbind the current thread (or start a fresh thread on `<harness>`)                  |
+| `/stop`          | Abort the active turn on the current thread                                         |
+| `/model [model]` | List `/model <id>` options for the current harness, or switch to `<id>` / `default` |
+| `/status`        | Display the thread's harness, model, runtime state, and context usage               |
+| `/usage`         | Query harness auth status and subscription quota windows                            |
 
 ---
 
