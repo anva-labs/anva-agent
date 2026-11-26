@@ -7,6 +7,7 @@ import { createApiApp } from "./api/server.ts";
 import type { ChannelBridge, ChannelBridgeFactory } from "./channels/types.ts";
 import { createOarHarnessAdapter, type HarnessAdapter } from "./harness/oar-adapter.ts";
 import { type AnvaPaths, resolveAnvaPaths } from "./paths.ts";
+import { NO_REPLY_SENTINEL } from "./prompts.ts";
 import { AutomationEngine } from "./runtime/automation-engine.ts";
 import { HistoryIndex } from "./runtime/history-index.ts";
 import { ThreadManager } from "./runtime/thread-manager.ts";
@@ -82,6 +83,7 @@ export function createAnvaApp(options: CreateAnvaAppOptions = {}): AnvaApp {
   const history = new HistoryIndex(store);
 
   let currentUrl = `http://${host}:${requestedPort}`;
+  let channels: ChannelBridge | null = null;
 
   const threads = new ThreadManager({
     store,
@@ -92,9 +94,23 @@ export function createAnvaApp(options: CreateAnvaAppOptions = {}): AnvaApp {
       (process.env.ANVA_IDLE_TTL_MS ? Number(process.env.ANVA_IDLE_TTL_MS) : undefined),
     cliPath: options.cliPath,
     getApiConfig: () => ({ url: currentUrl, token }),
+    onBackgroundReply: async ({ threadId, agentSlug, reply }) => {
+      const trimmed = reply.trim();
+      if (!trimmed || trimmed === NO_REPLY_SENTINEL) {
+        return;
+      }
+      if (!channels || !store.getChannelRouteByThread(threadId)) {
+        return;
+      }
+      await channels.send({
+        agentSlug,
+        target: threadId,
+        text: trimmed,
+      });
+    },
   });
 
-  const channels = options.channels ? options.channels({ store, harness, threads, paths }) : null;
+  channels = options.channels ? options.channels({ store, harness, threads, paths }) : null;
 
   const automations = new AutomationEngine({
     store,
@@ -148,6 +164,9 @@ export function createAnvaApp(options: CreateAnvaAppOptions = {}): AnvaApp {
             resolve(srv);
           },
         );
+        if ("requestTimeout" in srv) {
+          srv.requestTimeout = 0;
+        }
         srv.once("error", reject);
       });
 
@@ -157,6 +176,7 @@ export function createAnvaApp(options: CreateAnvaAppOptions = {}): AnvaApp {
         token,
       };
       writeRuntimeFile(paths.runtime, runtimeInfo);
+      threads.recoverStaleThreads();
       if (channels) {
         await channels.start();
       }

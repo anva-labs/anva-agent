@@ -308,7 +308,7 @@ export function createChannelRouter(
         return;
       }
       const rt = threads.getThreadRuntimeStatus(boundThread.id);
-      const state = rt.running ? "running" : rt.active ? "active" : "idle";
+      const state = rt.running ? "running" : boundThread.status;
       const modelDisplay = rt.activeModel ?? boundThread.model ?? "(default)";
       const ctxDisplay =
         rt.contextUsage && rt.contextUsage.tokens !== null
