@@ -5,13 +5,7 @@ export type {
   LiveReplyHandle,
   OutboundTarget,
 } from "./types.ts";
-export {
-  TELEGRAM_SAFE_TEXT_LIMIT,
-  markdownToTelegramHtml,
-  parseSlashCommand,
-  splitTelegramText,
-  type ParsedSlashCommand,
-} from "./telegram/format.ts";
+export { parseSlashCommand, type ParsedSlashCommand } from "./telegram/commands.ts";
 export {
   TelegramApi,
   TelegramApiError,

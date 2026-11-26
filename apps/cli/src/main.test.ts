@@ -217,7 +217,7 @@ describe("@anva/cli", () => {
       if (method === "setMyCommands") {
         return Response.json({ ok: true, result: true });
       }
-      if (method === "sendMessage" || method === "sendDocument") {
+      if (method === "sendRichMessage" || method === "sendDocument") {
         let chatId = "";
         if (typeof init?.body === "string") {
           chatId = String((JSON.parse(init.body) as { chat_id?: string }).chat_id ?? "");
@@ -306,10 +306,10 @@ describe("@anva/cli", () => {
     );
     expect(negTargetRes.exitCode).toBe(0);
     expect(sentPayloads).toEqual([
-      { method: "sendMessage", chatId: "999" },
+      { method: "sendRichMessage", chatId: "999" },
       { method: "sendDocument", chatId: "999" },
       { method: "sendDocument", chatId: "999" },
-      { method: "sendMessage", chatId: "-100123" },
+      { method: "sendRichMessage", chatId: "-100123" },
     ]);
 
     const renameRes = await runCli(

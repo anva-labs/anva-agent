@@ -247,9 +247,6 @@ importers:
       '@anva/core':
         specifier: workspace:*
         version: link:../core
-      marked:
-        specifier: 18.3.0
-        version: 18.3.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1452,11 +1449,6 @@ packages:
 
   marked@18.0.11:
     resolution: {integrity: sha512-HnslJfsZkRPBDJRHvVtAaWlZHEpSu7u8LgQuJCELjRKuWR+hpq4A7sLq3p8HaI9ypVoXDXxV34CsQJEe1+J5Aw==}
-    engines: {node: '>= 20'}
-    hasBin: true
-
-  marked@18.3.0:
-    resolution: {integrity: sha512-ed8zmPXlBb3UfGXN5iHMQyMhFpdqLgoV5umUXx/Q1R+FW3q8VpqpyoKUwlENL9appo2UMvNLURDVaT3AMOryGA==}
     engines: {node: '>= 20'}
     hasBin: true
 
@@ -2926,8 +2918,6 @@ snapshots:
 
   marked@18.0.11:
     optional: true
-
-  marked@18.3.0: {}
 
   minimatch@11.0.3:
     dependencies:

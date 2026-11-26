@@ -7,7 +7,7 @@ Anva is a local daemon that turns installed coding CLIs (Claude Code, Codex, Pi,
 1. **Delegate the harness**: External harnesses (Claude Code, Codex, Pi, and others supported by OAR) own the agent loop, model auth and subscriptions, tool execution, and native skill discovery. All `@botiverse/oar` imports stay behind a single adapter boundary (`packages/core/src/harness/`).
 2. **Threads and files first**: Threads are persistent conversations that pin their `harness` at creation and always execute with `cwd` fixed to the agent's home directory (`~/.anva/agents/<slug>/`). Agent state and secrets stay transparent on disk (`PERSONA.md`, `MEMORY.md`, `skills/`, `.env`).
 3. **Headless and composable**: Configuration and agent self-management run through the `anva` CLI, local files, and script-first automations. Built-in messaging adapters are outbound-only so no public inbound endpoint is required.
-4. **Minimal concepts and fail-fast semantics**: Single-process Node.js daemon (`>=24.0.0`) backed by built-in `node:sqlite`, Hono, Zod, `citty`, `marked`, and `croner`. No persistent inbox queues, no cross-harness thread switching, and no silent session recreation when resuming a native session fails.
+4. **Minimal concepts and fail-fast semantics**: Single-process Node.js daemon (`>=24.0.0`) backed by built-in `node:sqlite`, Hono, Zod, `citty`, and `croner`. No persistent inbox queues, no cross-harness thread switching, and no silent session recreation when resuming a native session fails.
 
 ### Explicit non-goals (current version)
 
@@ -75,7 +75,7 @@ flowchart TB
 | SQLite store and incremental migrations               | [packages/core/src/store/](../packages/core/src/store/)                                                      |
 | Thread runtime, prompt snapshot, FTS5 search, cron    | [packages/core/src/runtime/](../packages/core/src/runtime/)                                                  |
 | Local `/v1/*` Hono API and daemon lifecycle           | [packages/core/src/api/server.ts](../packages/core/src/api/server.ts), [app.ts](../packages/core/src/app.ts) |
-| Telegram long polling, HTML renderer, channel router  | [packages/channels/src/](../packages/channels/src/)                                                          |
+| Telegram long polling, message delivery, routing      | [packages/channels/src/](../packages/channels/src/)                                                          |
 | Unified `anva` CLI (`citty` commands + runtime scope) | [apps/cli/src/](../apps/cli/src/)                                                                            |
 
 ---
@@ -160,5 +160,5 @@ Operational details, Telegram fail-closed owner pairing (`TELEGRAM_ALLOWED_USER_
 
 - **Runtime & language**: Node.js `>=24.0.0`, ESM TypeScript, pnpm workspace
 - **Storage**: `node:sqlite` (WAL, `STRICT`, FTS5 `trigram`)
-- **Harness & core libraries**: `@botiverse/oar`, `hono`, `@hono/node-server`, `zod`, `citty`, `marked`, `croner`
+- **Harness & core libraries**: `@botiverse/oar`, `hono`, `@hono/node-server`, `zod`, `citty`, `croner`
 - **Tooling**: `tsrs`, `vite-plus` (`vp` / `oxlint` / `oxfmt` / `vitest`)
