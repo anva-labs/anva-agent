@@ -134,6 +134,10 @@ describe("HistoryIndex (SQLite FTS5 trigram + CJK fallback)", () => {
     expect(full.messages[0]?.truncated).toBe(false);
     expect(full.messages[0]?.content).toBe(longText);
 
+    const crossAgent = index.read({ threadId: t.id, full: true });
+    expect(crossAgent.agentSlug).toBe("coder");
+    expect(crossAgent.messages[0]?.content).toBe(longText);
+
     expect(() => index.rebuild()).not.toThrow();
   });
 

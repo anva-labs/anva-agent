@@ -15,8 +15,7 @@
     "build": "tsrs -p tsconfig.build.json"
   },
   "dependencies": {
-    "@anva/core": "workspace:*",
-    "marked": "18.3.0"
+    "@anva/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

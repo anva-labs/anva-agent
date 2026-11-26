@@ -18,7 +18,7 @@ import {
 } from "@anva/core";
 import { TelegramApi } from "./telegram/api.ts";
 import { sendTelegramFile, sendTelegramText, TelegramChannel } from "./telegram/channel.ts";
-import { parseSlashCommand } from "./telegram/format.ts";
+import { parseSlashCommand } from "./telegram/commands.ts";
 import type { InboundMessage, OutboundTarget } from "./types.ts";
 
 export interface ChannelRouterOptions {
@@ -270,7 +270,7 @@ export function createChannelRouter(
           }
         }
         lines.push("", "To switch harness, run `/new <harness>`.");
-        await channel.sendText(target, lines.join("\n"));
+        await channel.sendText(target, lines.join("  \n"));
         return;
       }
 
@@ -303,12 +303,12 @@ export function createChannelRouter(
       if (!boundThread) {
         await channel.sendText(
           target,
-          `Agent: ${agent.slug} (${agent.name})\nNo active thread yet. Send a message or /new to start (default harness=${agent.defaultHarness}).`,
+          `Agent: ${agent.slug} (${agent.name})  \nNo active thread yet. Send a message or /new to start (default harness=${agent.defaultHarness}).`,
         );
         return;
       }
       const rt = threads.getThreadRuntimeStatus(boundThread.id);
-      const state = rt.running ? "running" : rt.active ? "active" : "idle";
+      const state = rt.running ? "running" : boundThread.status;
       const modelDisplay = rt.activeModel ?? boundThread.model ?? "(default)";
       const ctxDisplay =
         rt.contextUsage && rt.contextUsage.tokens !== null
@@ -323,7 +323,7 @@ export function createChannelRouter(
           `Model: ${modelDisplay}`,
           `State: ${state}`,
           `Context: ${ctxDisplay}`,
-        ].join("\n"),
+        ].join("  \n"),
       );
       return;
     }
@@ -354,7 +354,7 @@ export function createChannelRouter(
       } else {
         lines.push("Usage: unavailable for this harness");
       }
-      await channel.sendText(target, lines.join("\n"));
+      await channel.sendText(target, lines.join("  \n"));
     }
   }
 

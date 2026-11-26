@@ -118,7 +118,7 @@ describe("@anva/cli", () => {
     expect(unsetRes.exitCode).toBe(0);
   });
 
-  it("runs agent create, multi-turn ask, thread list, and session search/read against daemon", async () => {
+  it("runs agent create, multi-turn ask, thread list/status/wait/search/read, and removes session", async () => {
     const home = mkdtempSync(join(tmpdir(), "anva-cli-e2e-"));
     const app = createAnvaApp({
       home,
@@ -153,8 +153,12 @@ describe("@anva/cli", () => {
       parsed1.threadId,
     );
 
+    const removedSessionRes = await runCli(["session", "search", "部署方案"], env);
+    expect(removedSessionRes.exitCode).toBe(1);
+    expect(removedSessionRes.stderr).toContain("unknown_command");
+
     const searchRes = await runCli(
-      ["session", "search", "部署方案", "--agent", "coder", "--json"],
+      ["thread", "search", "部署方案", "--agent", "coder", "--json"],
       env,
     );
     expect(searchRes.exitCode).toBe(0);
@@ -163,9 +167,9 @@ describe("@anva/cli", () => {
     };
     expect(searchData.hits[0]?.threadId).toBe(parsed1.threadId);
 
-    // Inside an agent session (ANVA_THREAD_ID set), session search automatically excludes the current thread unless --thread is passed
+    // Inside an agent session (ANVA_THREAD_ID set), thread search automatically excludes the current thread unless --thread is passed
     const excludedSearchRes = await runCli(
-      ["session", "search", "部署方案", "--agent", "coder", "--json"],
+      ["thread", "search", "部署方案", "--agent", "coder", "--json"],
       { ...env, ANVA_THREAD_ID: parsed1.threadId },
     );
     expect(excludedSearchRes.exitCode).toBe(0);
@@ -174,7 +178,7 @@ describe("@anva/cli", () => {
     ).toHaveLength(0);
 
     const explicitThreadSearchRes = await runCli(
-      ["session", "search", "部署方案", "--agent", "coder", "--thread", parsed1.threadId, "--json"],
+      ["thread", "search", "部署方案", "--agent", "coder", "--thread", parsed1.threadId, "--json"],
       { ...env, ANVA_THREAD_ID: parsed1.threadId },
     );
     expect(explicitThreadSearchRes.exitCode).toBe(0);
@@ -183,15 +187,65 @@ describe("@anva/cli", () => {
         .hits[0]?.threadId,
     ).toBe(parsed1.threadId);
 
-    const readRes = await runCli(
-      ["session", "read", parsed1.threadId, "--agent", "coder", "--json"],
-      env,
-    );
+    // thread read works without --agent
+    const readRes = await runCli(["thread", "read", parsed1.threadId, "--json"], env);
     expect(readRes.exitCode).toBe(0);
     const readData = JSON.parse(readRes.stdout) as {
+      readonly agentSlug: string;
       readonly messages: { readonly role: string; readonly content: string }[];
     };
+    expect(readData.agentSlug).toBe("coder");
     expect(readData.messages).toHaveLength(4);
+
+    // thread status reflects persisted state and latest reply
+    const statusRes = await runCli(["thread", "status", parsed1.threadId, "--json"], env);
+    expect(statusRes.exitCode).toBe(0);
+    const statusData = JSON.parse(statusRes.stdout) as {
+      readonly thread: { readonly status: string; readonly turnSeq: number };
+      readonly lastReply: { readonly content: string } | null;
+    };
+    expect(statusData.thread.status).toBe("completed");
+    expect(statusData.thread.turnSeq).toBe(2);
+    expect(statusData.lastReply?.content).toBe("reply:补充说明");
+
+    // In-session async ask binds parentThreadId, thread list --children shows it, and thread wait retrieves result
+    const childAsk = await runCli(["ask", "coder", "--async", "后台子任务", "--json"], {
+      ...env,
+      ANVA_THREAD_ID: parsed1.threadId,
+    });
+    expect(childAsk.exitCode).toBe(0);
+    const childParsed = JSON.parse(childAsk.stdout) as {
+      readonly async: true;
+      readonly threadId: string;
+      readonly turnSeq: number;
+    };
+    expect(childParsed.async).toBe(true);
+    expect(childParsed.turnSeq).toBe(1);
+
+    const childrenList = await runCli(["thread", "list", "--children", "--json"], {
+      ...env,
+      ANVA_THREAD_ID: parsed1.threadId,
+    });
+    expect(childrenList.exitCode).toBe(0);
+    const childrenData = JSON.parse(childrenList.stdout) as {
+      readonly threads: { readonly id: string; readonly parentThreadId: string | null }[];
+    };
+    expect(childrenData.threads.map((t) => t.id)).toEqual([childParsed.threadId]);
+    expect(childrenData.threads[0]?.parentThreadId).toBe(parsed1.threadId);
+
+    const waitRes = await runCli(["thread", "wait", childParsed.threadId, "--json"], env);
+    expect(waitRes.exitCode).toBe(0);
+    const waitData = JSON.parse(waitRes.stdout) as {
+      readonly timedOut: boolean;
+      readonly threads: {
+        readonly threadId: string;
+        readonly status: string;
+        readonly reply: string;
+      }[];
+    };
+    expect(waitData.timedOut).toBe(false);
+    expect(waitData.threads[0]?.status).toBe("completed");
+    expect(waitData.threads[0]?.reply).toBe("reply:后台子任务");
   });
 
   it("connects, lists, sends text/file, and disconnects a telegram channel via CLI", async () => {
@@ -217,7 +271,7 @@ describe("@anva/cli", () => {
       if (method === "setMyCommands") {
         return Response.json({ ok: true, result: true });
       }
-      if (method === "sendMessage" || method === "sendDocument") {
+      if (method === "sendRichMessage" || method === "sendDocument") {
         let chatId = "";
         if (typeof init?.body === "string") {
           chatId = String((JSON.parse(init.body) as { chat_id?: string }).chat_id ?? "");
@@ -306,10 +360,10 @@ describe("@anva/cli", () => {
     );
     expect(negTargetRes.exitCode).toBe(0);
     expect(sentPayloads).toEqual([
-      { method: "sendMessage", chatId: "999" },
+      { method: "sendRichMessage", chatId: "999" },
       { method: "sendDocument", chatId: "999" },
       { method: "sendDocument", chatId: "999" },
-      { method: "sendMessage", chatId: "-100123" },
+      { method: "sendRichMessage", chatId: "-100123" },
     ]);
 
     const renameRes = await runCli(

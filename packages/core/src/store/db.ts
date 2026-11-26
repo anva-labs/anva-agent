@@ -15,15 +15,22 @@ export interface AgentRecord {
 }
 
 export type ThreadSource = "cli" | "channel" | "automation";
+export type ThreadStatus = "idle" | "running" | "completed" | "failed" | "aborted" | "interrupted";
 
 export interface ThreadRecord {
   readonly id: string;
   readonly agentSlug: string;
+  readonly parentThreadId: string | null;
   readonly title: string;
   readonly source: ThreadSource;
   readonly harness: string;
   readonly model: string | null;
   readonly nativeSessionId: string | null;
+  readonly status: ThreadStatus;
+  readonly lastError: string | null;
+  readonly turnSeq: number;
+  readonly lastTurnStartedAt: number | null;
+  readonly lastTurnEndedAt: number | null;
   readonly lastActivityAt: number;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -164,15 +171,35 @@ function toThreadSource(value: string): ThreadSource {
   throw new Error(`Unexpected thread source "${value}"`);
 }
 
+export function toThreadStatus(value: string): ThreadStatus {
+  if (
+    value === "idle" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "aborted" ||
+    value === "interrupted"
+  ) {
+    return value;
+  }
+  throw new Error(`Unexpected thread status "${value}"`);
+}
+
 function toThread(row: SqlRow): ThreadRecord {
   return {
     id: str(row, "id"),
     agentSlug: str(row, "agent_slug"),
+    parentThreadId: nullableStr(row, "parent_thread_id"),
     title: str(row, "title"),
     source: toThreadSource(str(row, "source")),
     harness: str(row, "harness"),
     model: nullableStr(row, "model"),
     nativeSessionId: nullableStr(row, "native_session_id"),
+    status: toThreadStatus(str(row, "status")),
+    lastError: nullableStr(row, "last_error"),
+    turnSeq: num(row, "turn_seq"),
+    lastTurnStartedAt: nullableNum(row, "last_turn_started_at"),
+    lastTurnEndedAt: nullableNum(row, "last_turn_ended_at"),
     lastActivityAt: num(row, "last_activity_at"),
     createdAt: num(row, "created_at"),
     updatedAt: num(row, "updated_at"),
@@ -397,6 +424,7 @@ export class AnvaStore {
 
   createThread(input: {
     readonly agentSlug: string;
+    readonly parentThreadId?: string | null;
     readonly title?: string;
     readonly source?: ThreadSource;
     readonly harness: string;
@@ -404,22 +432,29 @@ export class AnvaStore {
   }): ThreadRecord {
     const id = createId("th");
     const now = Date.now();
+    const parentThreadId = input.parentThreadId ?? null;
     const title = input.title ?? "";
     const source = input.source ?? "cli";
     const model = input.model ?? null;
     this.db
       .prepare(
-        "INSERT INTO threads (id, agent_slug, title, source, harness, model, native_session_id, last_activity_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+        "INSERT INTO threads (id, agent_slug, parent_thread_id, title, source, harness, model, native_session_id, status, last_error, turn_seq, last_turn_started_at, last_turn_ended_at, last_activity_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'idle', NULL, 0, NULL, NULL, ?, ?, ?)",
       )
-      .run(id, input.agentSlug, title, source, input.harness, model, now, now, now);
+      .run(id, input.agentSlug, parentThreadId, title, source, input.harness, model, now, now, now);
     return {
       id,
       agentSlug: input.agentSlug,
+      parentThreadId,
       title,
       source,
       harness: input.harness,
       model,
       nativeSessionId: null,
+      status: "idle",
+      lastError: null,
+      turnSeq: 0,
+      lastTurnStartedAt: null,
+      lastTurnEndedAt: null,
       lastActivityAt: now,
       createdAt: now,
       updatedAt: now,
@@ -432,20 +467,27 @@ export class AnvaStore {
   }
 
   listThreads(
-    options: { readonly agentSlug?: string; readonly limit?: number } = {},
+    options: {
+      readonly agentSlug?: string;
+      readonly parentThreadId?: string;
+      readonly limit?: number;
+    } = {},
   ): ThreadRecord[] {
     const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
+    const where: string[] = [];
+    const params: Array<string | number> = [];
     if (options.agentSlug) {
-      const rows = this.db
-        .prepare(
-          "SELECT * FROM threads WHERE agent_slug = ? ORDER BY last_activity_at DESC LIMIT ?",
-        )
-        .all(options.agentSlug, limit) as SqlRow[];
-      return rows.map(toThread);
+      where.push("agent_slug = ?");
+      params.push(options.agentSlug);
     }
+    if (options.parentThreadId) {
+      where.push("parent_thread_id = ?");
+      params.push(options.parentThreadId);
+    }
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")} ` : "";
     const rows = this.db
-      .prepare("SELECT * FROM threads ORDER BY last_activity_at DESC LIMIT ?")
-      .all(limit) as SqlRow[];
+      .prepare(`SELECT * FROM threads ${whereClause}ORDER BY last_activity_at DESC LIMIT ?`)
+      .all(...params, limit) as SqlRow[];
     return rows.map(toThread);
   }
 
@@ -482,6 +524,102 @@ export class AnvaStore {
     this.db
       .prepare("UPDATE threads SET last_activity_at = ?, updated_at = ? WHERE id = ?")
       .run(at, at, id);
+  }
+
+  markThreadTurnStarted(id: string, startedAt = Date.now()): ThreadRecord {
+    const row = this.db
+      .prepare(
+        `UPDATE threads
+         SET status = 'running',
+             last_error = NULL,
+             turn_seq = turn_seq + 1,
+             last_turn_started_at = ?,
+             last_turn_ended_at = NULL,
+             last_activity_at = ?,
+             updated_at = ?
+         WHERE id = ?
+         RETURNING *`,
+      )
+      .get(startedAt, startedAt, startedAt, id) as SqlRow | undefined;
+    if (!row) {
+      throw new AnvaError("thread_not_found", `Thread "${id}" was not found.`, 404);
+    }
+    return toThread(row);
+  }
+
+  markThreadTurnEnded(
+    id: string,
+    input: {
+      readonly status: Exclude<ThreadStatus, "idle" | "running">;
+      readonly lastError?: string | null;
+      readonly endedAt?: number;
+    },
+  ): ThreadRecord {
+    const endedAt = input.endedAt ?? Date.now();
+    const lastError = input.lastError ?? null;
+    const row = this.db
+      .prepare(
+        `UPDATE threads
+         SET status = ?,
+             last_error = ?,
+             last_turn_ended_at = ?,
+             last_activity_at = ?,
+             updated_at = ?
+         WHERE id = ?
+         RETURNING *`,
+      )
+      .get(input.status, lastError, endedAt, endedAt, endedAt, id) as SqlRow | undefined;
+    if (!row) {
+      throw new AnvaError("thread_not_found", `Thread "${id}" was not found.`, 404);
+    }
+    return toThread(row);
+  }
+
+  recoverStaleRunningThreads(nowMs = Date.now()): number {
+    const info = this.db
+      .prepare(
+        `UPDATE threads
+         SET status = 'interrupted',
+             last_error = 'Daemon restarted before turn completed.',
+             last_turn_ended_at = ?,
+             updated_at = ?
+         WHERE status = 'running'`,
+      )
+      .run(nowMs, nowMs);
+    return Number(info.changes);
+  }
+
+  listRunningChildThreads(parentThreadId: string): ThreadRecord[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM threads WHERE parent_thread_id = ? AND status = 'running' ORDER BY last_turn_started_at ASC",
+      )
+      .all(parentThreadId) as SqlRow[];
+    return rows.map(toThread);
+  }
+
+  countChildThreads(parentThreadId: string): { readonly total: number; readonly running: number } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running
+         FROM threads
+         WHERE parent_thread_id = ?`,
+      )
+      .get(parentThreadId) as SqlRow;
+    return {
+      total: num(row, "total"),
+      running: num(row, "running"),
+    };
+  }
+
+  getLatestAssistantMessage(threadId: string): MessageRecord | null {
+    const row = this.db
+      .prepare(
+        "SELECT * FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(threadId) as SqlRow | undefined;
+    return row ? toMessage(row) : null;
   }
 
   insertMessage(input: {

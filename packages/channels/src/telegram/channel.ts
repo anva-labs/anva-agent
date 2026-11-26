@@ -6,7 +6,6 @@ import type {
   OutboundTarget,
 } from "../types.ts";
 import { TelegramApi, TelegramApiError, type TelegramMessage } from "./api.ts";
-import { markdownToTelegramHtml, splitTelegramText } from "./format.ts";
 
 export type InboundAuthDecision = "allow" | "paired" | "deny";
 
@@ -99,41 +98,17 @@ function extractRawAttachments(msg: TelegramMessage): InboundAttachment[] {
   return attachments;
 }
 
-async function sendHtmlWithFallback(
-  api: TelegramApi,
-  target: OutboundTarget,
-  chunk: string,
-): Promise<TelegramMessage> {
-  try {
-    return await api.sendMessage({
-      chatId: target.externalChatId,
-      messageThreadId: target.externalThreadId || undefined,
-      text: markdownToTelegramHtml(chunk),
-      parseMode: "HTML",
-    });
-  } catch (error) {
-    if (error instanceof TelegramApiError && error.status === 400) {
-      return api.sendMessage({
-        chatId: target.externalChatId,
-        messageThreadId: target.externalThreadId || undefined,
-        text: chunk,
-      });
-    }
-    throw error;
-  }
-}
-
 export async function sendTelegramText(
   api: TelegramApi,
   target: OutboundTarget,
   text: string,
 ): Promise<string[]> {
-  const ids: string[] = [];
-  for (const chunk of splitTelegramText(text, 3800)) {
-    const msg = await sendHtmlWithFallback(api, target, chunk);
-    ids.push(String(msg.message_id));
-  }
-  return ids;
+  const msg = await api.sendRichMessage({
+    chatId: target.externalChatId,
+    messageThreadId: target.externalThreadId || undefined,
+    markdown: text,
+  });
+  return [String(msg.message_id)];
 }
 
 export async function sendTelegramFile(

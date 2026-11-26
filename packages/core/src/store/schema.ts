@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_MIGRATIONS_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -145,6 +145,18 @@ CREATE INDEX IF NOT EXISTS idx_aruns_auto ON automation_runs(automation_id, star
     version: 4,
     sql: `
 ALTER TABLE automations DROP COLUMN target_kind;
+`,
+  },
+  {
+    version: 5,
+    sql: `
+ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL;
+ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'idle';
+ALTER TABLE threads ADD COLUMN last_error TEXT;
+ALTER TABLE threads ADD COLUMN turn_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE threads ADD COLUMN last_turn_started_at INTEGER;
+ALTER TABLE threads ADD COLUMN last_turn_ended_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id, last_activity_at DESC);
 `,
   },
 ];
